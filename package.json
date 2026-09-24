@@ -1,0 +1,65 @@
+{
+  "name": "@faicad/faijs-fcstd",
+  "version": "0.16.1",
+  "description": "FCStd reader and .fai.js conversion pipeline for faijs — unpack, sketch parse/solve, feature translate, batch CLI",
+  "keywords": [
+    "faijs",
+    "cad",
+    "fcstd",
+    "freecad",
+    "converter"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://gitcode.com/Faicad/faijs.git"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "faijs-fcstd-convert": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./convert": {
+      "types": "./dist/convert.d.ts",
+      "default": "./dist/convert.js"
+    },
+    "./*": {
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    }
+  },
+  "files": [
+    "dist",
+    "NOTICE",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@salusoft89/planegcs": "1.2.0",
+    "@xmldom/xmldom": "^0.9.8",
+    "fflate": "^0.8.2"
+  },
+  "peerDependencies": {
+    "@faicad/faijs": "^0.16.0",
+    "occt-wasm": "^3.8.4"
+  },
+  "devDependencies": {
+    "typescript": "*",
+    "vitest": "*",
+    "occt-wasm": "^3.8.4",
+    "three": "^0.184.0",
+    "@types/three": "^0.184.1"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && node ../../scripts/fix-import-extensions.mjs dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint src"
+  }
+}

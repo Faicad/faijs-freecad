@@ -1,0 +1,663 @@
+/**
+ * M5 — code generation: object graph + M4 call plans → model/*.fai.js.
+ *
+ * M5.1 topological order: Body.Group order wins where present; otherwise
+ * PropertyLink dependency order. Cycles / missing deps → baked (no fallback
+ * heuristics — explicit downgrade per plan §12).
+ * M5.2 lowering: params → JS constants; calls → `const partN = await cad.x(...)`;
+ * statement ids sN. Sketch contours enter as blueprint literals.
+ *
+ * 本文件为 Placement 发射平台 `cad.place`（旋转四元数 + 平移，单点）、为产物聚合发射
+ * 平台 `cad.compound`（几何复合体，内核 `makeCompound`，持 OCCT 句柄）。这两个是 faijs
+ * 平台几何 op（H11，方案 §4），不再借用 `../3d_editor` 的 `cad.group` /
+ * `cad.translate` / `cad.rotate_euler`（编辑器交互 op，JSDoc 已 @deprecated）。
+ */
+import type { FcstdDocument } from './document.js';
+import type { CadCall, TranslateVerdict } from './feature-translate.js';
+import { translateObject, isJsExpr, jsExpr, BODY_CHAIN_BASE } from './feature-translate.js';
+import type { FilletEdgeEntry } from './fillet-edges.js';
+import type { Contour } from './contour.js';
+import { type Placement, isIdentityPlacement, invertApplyPlacement } from './placement.js';
+import { isNonModelingType } from './structural-types.js';
+
+/** Per-object codegen outcome: what was emitted for one FCStd object. */
+export interface GenObjectResult {
+  /** FCStd object name */
+  name: string;
+  /** FCStd type id */
+  type: string;
+  /** variable name bound in generated code (partN) or undefined when baked */
+  variable?: string;
+  calls: CadCall[];
+  disposition: 'translated' | 'baked' | 'preserved-only';
+  reason?: string;
+  /** M3 sketch verdict when the object is a sketch */
+  sketch?: { level: 'L0' | 'L1' | 'L2'; reason?: string; loopCount?: number };
+}
+
+/** Full codegen output: lowered calls, per-object ledger and generated script(s). */
+export interface GenResult {
+  /** ordered translated calls (dependency order) */
+  calls: CadCall[];
+  objects: GenObjectResult[];
+  /** generated .fai.js source (single-file mode or the main/aggregate script) */
+  code: string;
+  /** M10.3: multi-file mode — one script per Body with translated geometry.
+   * Empty in single-file mode. Paths are container-relative (model/<Name>.fai.js). */
+  files: { path: string; code: string; body: string }[];
+  /** M10.3: variable in main.fai.js holding the grouped result (multi-file mode) */
+  rootVar?: string;
+}
+
+interface Node {
+  name: string;
+  obj: ReturnType<FcstdDocument['objects'][number]['properties']['get']> extends never ? never : FcstdDocument['objects'][number];
+  deps: Set<string>;
+  verdict?: TranslateVerdict;
+  variable?: string;
+}
+
+/** Extract link dependencies relevant for ordering. */
+function depsOf(obj: FcstdDocument['objects'][number]): string[] {
+  const out: string[] = [];
+  const linkProps = ['Base', 'Tool', 'Profile', 'BaseFeature', 'Originals'];
+  for (const p of linkProps) {
+    const el = obj.properties.get(p)?.children[0];
+    const v = el?.attributes['value'];
+    if (v) out.push(v);
+  }
+  // GOTCHA (ArchDetail corpus, 2026-09-21): App::PropertyLinkList properties.
+  // `Shapes` is the multi-input geometry list (Part::MultiFuse / MultiCommon);
+  // `Links` is Part::Compound's member list. Neither is a single-value link
+  // property, so missing it here left the Compound with NO dependency on its
+  // members — Kahn then placed it at its document position, and ArchDetail's
+  // compounds sit at doc index 10-14 while every member sits at 269+ (Draft
+  // emits the wire first, the compound last, but the file order is sorted by
+  // name). inputVar() found nothing yet → `compound-missing-members` for all
+  // five compounds, for a pure ordering reason.
+  const linkLists = ['Shapes', 'Links'];
+  for (const p of linkLists) {
+    const el = obj.properties.get(p)?.children[0];
+    if (!el) continue;
+    for (const link of el.children) {
+      const v = link.attributes['value'];
+      if (v) out.push(v);
+    }
+  }
+  return out;
+}
+
+/**
+ * GOTCHA (PadTest V6 failure): a `PartDesign::Body`'s feature list lives in
+ * DIFFERENT properties depending on the FreeCAD version —
+ *   - modern (0.19+): `Model` (App::PropertyLinkList), ordered
+ *   - legacy: `Group` (App::PropertyLinkList)
+ * The Tip is `Body.Tip`. Reading only `Group` on a modern document yields an
+ * empty list → no same-Body chaining → features degrade to a loose
+ * `cad.group` of overlapping siblings (PadTest rebuilt volume ≈ 5.2× the Tip's,
+ * bboxDiag ≈ 2×). Prefer `Model`, fall back to `Group`.
+ */
+function bodyFeatureNames(obj: FcstdDocument['objects'][number]): string[] {
+  for (const prop of ['Model', 'Group']) {
+    const list = obj.properties.get(prop)?.children[0];
+    if (!list) continue;
+    const names: string[] = [];
+    for (const link of list.children) {
+      const v = link.attributes['value'];
+      if (v) names.push(v);
+    }
+    if (names.length > 0) return names;
+  }
+  return [];
+}
+
+/**
+ * M5.1/M5.2 — translate every object in dependency order and lower to JS.
+ * `sketchVerdict` supplies the M3 outcome per sketch object name; sketches
+ * whose contour feeds a Pad/Pocket appear as inputs.
+ *
+ * @param doc parsed FCStd object graph to translate
+ * @param sketchVerdict per-sketch M3 verdict keyed by object name
+ * @param sketchContours solved contours per L0 sketch, keyed by object name
+ * @param baseName source base name used in generated file headers/labels
+ * @param placements per-object Placement used to re-orient placed geometry; missing → identity
+ * @param shapeCarriers objects whose Shape is a ZIP .brp member (pure-Shape carriers → shape-asset)
+ * @param brokenShapeAssets objects whose Shape `file` attribute points at a missing/empty member (explicit gap)
+ * @param filletEdgesData parsed PropertyFilletEdges binaries keyed by object name (Part::Chamfer/Fillet)
+ * @returns the lowered call plan, per-object dispositions and generated code
+ */
+export function generateModel(
+  doc: FcstdDocument,
+  sketchVerdict: Map<string, { level: 'L0' | 'L1' | 'L2'; reason?: string; loopCount?: number }>,
+  sketchContours: Map<string, Contour[]>,
+  baseName: string,
+  /** M8.3: per-object Placement (sketches + features); missing → identity */
+  placements?: Map<string, Placement>,
+  /** H7: objects whose Shape is a ZIP .brp member (pure-Shape carriers → shape-asset). */
+  shapeCarriers?: ReadonlySet<string>,
+  /** E4: objects whose Shape `file` attribute points at a missing/empty member (explicit gap). */
+  brokenShapeAssets?: ReadonlySet<string>,
+  /** P8: parsed PropertyFilletEdges binaries keyed by object name (Part::Chamfer/Fillet). */
+  filletEdgesData?: ReadonlyMap<string, FilletEdgeEntry[]>,
+): GenResult {
+  const byName = new Map(doc.objects.map((o) => [o.name, o]));
+  // GOTCHA (test_geomop corpus, 2026-09-20): a dependency on a Body
+  // CONTAINER (Part::Cut with Tool→Body) really waits for the Body's
+  // features to have built the chain — expand the dep to the member
+  // features so Kahn orders the consumer AFTER the chain exists (and
+  // chainVar.get(Body) resolves). Treating the container itself as
+  // satisfiable instead let the Cut run before the chain was built.
+  const nodes = new Map<string, Node>();
+  for (const obj of doc.objects) {
+    const deps = new Set<string>();
+    for (const d of depsOf(obj)) {
+      const target = byName.get(d);
+      if (target?.type === 'PartDesign::Body') {
+        for (const m of bodyFeatureNames(target)) if (byName.has(m)) deps.add(m);
+      } else {
+        deps.add(d);
+      }
+    }
+    nodes.set(obj.name, { name: obj.name, obj, deps });
+  }
+
+  // Kahn topological sort; objects with unbuilt deps fall back to insertion
+  // order iteration until progress stalls (remaining are baked with reason).
+  // M10.1: iteration order is Body.Group sequence FIRST (features of a Body
+  // process in Group order so the D-C chain follows PartDesign semantics),
+  // then leftover objects in document order.
+  const groupSeq: string[] = [];
+  for (const obj of doc.objects) {
+    if (obj.type !== 'PartDesign::Body') continue;
+    for (const m of bodyFeatureNames(obj)) {
+      if (byName.has(m) && !groupSeq.includes(m)) groupSeq.push(m);
+    }
+  }
+  const iterationOrder = [
+    ...groupSeq,
+    ...doc.objects.map((o) => o.name).filter((n) => !groupSeq.includes(n)),
+  ];
+  const order: string[] = [];
+  const built = new Set<string>();
+  let progress = true;
+  while (progress) {
+    progress = false;
+    for (const name of iterationOrder) {
+      const node = nodes.get(name)!;
+      if (built.has(node.name)) continue;
+      if ([...node.deps].every((d) => built.has(d) || !byName.has(d) || byName.get(d)!.type === 'PartDesign::Body')) {
+        built.add(node.name);
+        order.push(node.name);
+        progress = true;
+      }
+    }
+  }
+
+  const variables = new Map<string, string>();
+  const results: GenObjectResult[] = [];
+  const calls: CadCall[] = [];
+  let partCounter = 0;
+  const newVar = (): string => `part${partCounter++}`;
+
+  // D-C (M9.4): same-Body features fuse cumulatively in Body.Group order —
+  // the first translated feature is the base, every later additive feature
+  // (Pad/…) unions with the chain, every subtractive one (Pocket/Cut)
+  // subtracts. cad.group is NOT used inside a Body (that is assembly
+  // semantics); cross-Body grouping stays in lower()'s root handling (M10).
+  const memberToBody = new Map<string, string>();
+  for (const obj of doc.objects) {
+    if (obj.type !== 'PartDesign::Body') continue;
+    for (const m of bodyFeatureNames(obj)) {
+      if (!memberToBody.has(m)) memberToBody.set(m, obj.name);
+    }
+  }
+  const chainVar = new Map<string, string>(); // body name → accumulated var
+
+  for (const name of order) {
+    const node = nodes.get(name)!;
+    const obj = node.obj;
+
+    if (obj.type === 'Sketcher::SketchObject') {
+      const verdict = sketchVerdict.get(name);
+      const contours = sketchContours.get(name);
+      const usable =
+        !!verdict &&
+        verdict.level !== 'L2' &&
+        (verdict.loopCount ?? 0) > 0 &&
+        !!contours &&
+        contours.length > 0;
+      if (usable) {
+        // M6 wiring: emit a real `cad.sketch({contours})` creator so the
+        // solved contour becomes a face variable the Pad/Pocket/Extrusion/
+        // Revolution features below can consume.
+        const v = newVar();
+        variables.set(name, v);
+        const sketchCall: CadCall = {
+          out: v, op: 'cad.sketch', source: name, inputs: [], params: { contours },
+        };
+        calls.push(sketchCall);
+        results.push({
+          name, type: obj.type, variable: v, calls: [sketchCall], disposition: 'translated',
+          sketch: verdict,
+        });
+      } else {
+        // P3-4 (2026-09-24, Slab adjustable scaffolder): a sketch may solve to
+        // L0 yet produce zero closed loops (dangling segments) — `loopCount`
+        // 0 then failed `usable` and the fallback labeled it `sketch-not-
+        // solved`, which lies about the cause. Give the L0-but-no-loop case
+        // its own explicit reason; keep the old fallbacks for genuinely
+        // missing verdicts/contours.
+        const reason = verdict?.reason
+          ?? (verdict?.level === 'L0' && contours && contours.length === 0
+            ? 'sketch-solved-no-closed-loop'
+            : contours ? 'sketch-not-solved' : 'sketch-no-contours');
+        results.push({
+          name, type: obj.type, calls: [], disposition: 'baked',
+          reason, sketch: verdict,
+        });
+      }
+      continue;
+    }
+
+    // Non-modeling objects are preserved-only and MUST be short-circuited
+    // BEFORE translation. GOTCHA (PadTest, 2026-09-21): this used to list only
+    // `App::Origin/Plane/Line`, so a Body's `PartDesign::Plane` went through
+    // the translator, matched the shape-asset rule (datum planes store a
+    // `Shape` .brp — the plane face) and was folded into the Body's chain:
+    // `cad.union(pad, datumPlane)`. That both corrupts the solid and fails at
+    // run time (`cad.load` requires a solid; a plane face has none). The
+    // predicate is shared with the C4 audit (`structural-types.ts`) so codegen
+    // and the disposition ledger can never disagree about what is non-modeling.
+    if (isNonModelingType(obj.type)) {
+      results.push({ name, type: obj.type, calls: [], disposition: 'preserved-only', reason: 'structural' });
+      continue;
+    }
+
+    // Sketches are now real face variables (see the Sketcher::SketchObject
+    // branch above), so every dependency that resolves to one flows through.
+    const verdict = translateObject(obj, (dep) => {
+      // GOTCHA (test_geomop corpus, 2026-09-20): a dependency on a Body
+      // CONTAINER (Part::Cut with Tool→Body) resolves against the Body's
+      // accumulated chain head, not `variables` — the container name is
+      // never registered there (its result lives in chainVar).
+      return variables.get(dep) ?? chainVar.get(dep);
+    }, doc.objects, shapeCarriers, brokenShapeAssets, filletEdgesData);
+    node.verdict = verdict;
+    if (verdict.kind === 'translated') {
+      // rename output vars to partN sequence
+      for (const call of verdict.calls) {
+        const v = newVar();
+        variables.set(call.out, v);
+        // remap inputs that were intermediate (Pocket_cut) or named outputs
+        call.inputs = call.inputs.map((i) => variables.get(i) ?? i);
+        // GOTCHA (ArchDetail s444, 2026-09-21): `cad.compound` passes its
+        // members as LEXICAL VARIABLE NAMES inside `params.members` — they
+        // must be remapped like `inputs`, otherwise renderArgs emits them as
+        // string literals and the op receives strings (no BREP handle) and
+        // throws "compound members are not all on the BREP chain".
+        const members = (call.params as { members?: unknown } | undefined)?.members;
+        if (Array.isArray(members)) {
+          call.params!.members = members.map((m) =>
+            typeof m === 'string' ? (variables.get(m) ?? m) : m,
+          );
+        }
+        call.out = v;
+        calls.push(call);
+      }
+      // M8.3: features build in sketch-local coordinates (cad.sketch lays the
+      // face on local XY; extrude runs along local +Z). Re-orient the final
+      // solid by the PROFILE SKETCH's Placement: rotate_euler then translate,
+      // so the result lands where FreeCAD puts it. Identity placements emit
+      // nothing.
+      // GOTCHA (PadTest V6, relErr 3.20%): a PartDesign feature's geometry is
+      // built in the SKETCH frame, but FreeCAD may store a DIFFERENT Placement
+      // on the feature object itself (Pad001: sketch P=(10,0,0)
+      // Q=(0,.7071,0,.7071) vs feature P=0 Q=(0,.7071,.7071,0)) — re-orienting
+      // by the feature's own frame drops the sketch origin offset and rotates
+      // the extrude axis into the wrong direction (−3.20% volume, centroid
+      // off 1.67). The sketch's Placement is the authoritative frame for the
+      // built geometry; fall back to the feature's own for sketchless features.
+      const lastVar = verdict.calls.at(-1)?.out;
+      const sketchLink = obj.properties.get('Sketch')?.children[0]?.attributes['value'];
+      const pl = (sketchLink ? placements?.get(sketchLink) : undefined) ?? placements?.get(name);
+      // GOTCHA (H13, TO92, 2026-09-23): a shape-asset object's frozen `.brp`
+      // member is saved by FreeCAD WITH its Placement already applied (the
+      // asset's bbox starts at the placed z). Re-emitting `cad.place` with the
+      // object's stored Placement applies the SAME transform twice — volume
+      // and solids stay correct, only a bbox/com parity check exposes it.
+      // The import already carries the placement; never place it again.
+      const isShapeAsset = verdict.reason === 'shape-asset';
+      if (lastVar && pl && !isIdentityPlacement(pl) && !isShapeAsset) {
+        // 单个刚性放置：旋转（四元数，绕局部原点）+ 平移 = FreeCAD Placement(P,Q)。
+        // 直接发 cad.place，避免 euler 往返损失精度（方案 §4.7：两语句合一）。
+        const cur = lastVar;
+        const rv = newVar();
+        variables.set(cur, rv); // map old name → placed var for consumers
+        calls.push({
+          out: rv, op: 'cad.place', source: name, inputs: [cur],
+          params: { rotation: [...pl.q], position: [...pl.p] },
+        });
+        // the object's variable is now the fully placed result
+        variables.set(name, rv);
+      }
+      // M9.4 (D-C): fold the feature into its Body's chain — AFTER the placement
+      // step so the chain accumulates the PLACED feature shape. Pocket/Cut
+      // subtract from the chain; everything else unions onto it. The first
+      // feature in the Body's feature list (Model/Group) order becomes the
+      // chain base — no cad.group inside a Body; consumers (M10) read chainVar.
+      // GOTCHA (PadTest V6): folding the UNPLACED feature var (the old order)
+      // left the chain head in sketch-local space while each feature's Placement
+      // was applied to a separate, unused variable → the exported body spanned
+      // both the local and the placed copies (~2× bboxDiag, ~5× volume).
+      const body = memberToBody.get(name);
+      const isSubtractive = obj.type === 'PartDesign::Pocket' || obj.type === 'Part::Cut';
+      if (body) {
+        const prev = chainVar.get(body);
+        // UpToLast/UpToFirst: FreeCAD's "up to" support is the Body's ACCUMULATED
+        // shape, NOT only the immediate BaseFeature link — retarget the kernel
+        // ref at the chain head (prev). GOTCHA (PadTest V6): truncating against
+        // the immediate BaseFeature (a small Pad001 disc) left an 8.06% volume
+        // deficit vs the Tip; against the accumulated chain it drops to 3.20%
+        // (bbox already exact at delta 0).
+        if (prev) {
+          for (const c of verdict.calls) {
+            // H7 (hole_puzzle corpus): the Pocket had NO BaseFeature property —
+            // the translator emitted BODY_CHAIN_BASE as the subtract's base
+            // input; retarget it at the chain head here (after the earlier
+            // inputs remap, which leaves the marker untouched since it is not
+            // a variable name).
+            if (c.inputs) {
+              c.inputs = c.inputs.map((i) => (i === BODY_CHAIN_BASE ? prev : i));
+            }
+            if (c.op === 'cad.extrude' && c.params.baseFeature !== undefined) {
+              // GOTCHA (PadTest V6 residual): the up-to extrude builds its
+              // prism in the SKETCH-LOCAL frame, but the chain head (prev)
+              // lives in the PLACED (global) frame. FreeCAD's boolean runs in
+              // one frame — so transform prev back into the sketch frame
+              // first: local = R^-1(global - p). Feeding the placed chain var
+              // directly silently truncates at the wrong face (Pad002 truth
+              // AddShape 48199 vs rebuilt deficit ~9108 mm^3 → 3.2% total).
+                const needsInverse =
+                  pl !== undefined && !isIdentityPlacement(pl);
+                if (needsInverse && pl) {
+                  // 逆向刚性放置（单点发射，方案 §4.7）：rotation 取共轭四元数、
+                  // position 取 invertApplyPlacement(pl, 0) = -(invQ·p)，合成为
+                  // 一个 cad.place，避免 euler 往返。语义 = invertApplyPlacement(pl, prev)。
+                  const invQ: [number, number, number, number] = [
+                    -pl.q[0]!, -pl.q[1]!, -pl.q[2]!, pl.q[3]!,
+                  ];
+                  const invPos = invertApplyPlacement(pl, [0, 0, 0]);
+                  const rv = newVar();
+                  const rvCall: CadCall = {
+                    out: rv, op: 'cad.place', source: name,
+                    inputs: [prev],
+                    params: { rotation: invQ, position: invPos },
+                  };
+                  // insert BEFORE the extrude call: faijs is a statement
+                  // language — `baseFeature: partN` referencing a later
+                  // statement is E_REFERENCE (parser rejects forward refs).
+                  const at = calls.indexOf(c);
+                  calls.splice(at < 0 ? calls.length : at, 0, rvCall);
+                  c.params.baseFeature = jsExpr(rv);
+                } else {
+                  c.params.baseFeature = jsExpr(prev);
+                }
+            }
+          }
+        }
+        const featureVar = variables.get(name) ?? verdict.calls.at(-1)!.out;
+        if (!prev) {
+          chainVar.set(body, featureVar); // base feature
+        } else if (isSubtractive && verdict.calls.at(-1)!.op === 'cad.subtract' && verdict.calls.at(-1)!.inputs.includes(prev)) {
+          // Pocket already subtracted from the chain var itself (BaseFeature
+          // resolved to the chain) — its output IS the new chain head; no
+          // extra subtract (would cut twice).
+          chainVar.set(body, featureVar);
+        } else if (isSubtractive) {
+          const nv = newVar();
+          calls.push({ out: nv, op: 'cad.subtract', source: name, inputs: [prev, featureVar], params: {} });
+          chainVar.set(body, nv);
+        } else {
+          const nv = newVar();
+          calls.push({ out: nv, op: 'cad.union', source: name, inputs: [prev, featureVar], params: {} });
+          chainVar.set(body, nv);
+        }
+      }
+      // H7 guard (motor_mount_inch corpus): a feature outside a Body (or with
+      // no chain head yet) never gets its BODY_CHAIN_BASE retargeted — the
+      // marker would leak into the generated JS as an illegal identifier
+      // (parser kills the whole file). Downgrade to an explicit gap instead.
+      if (verdict.calls.some((c) => c.inputs?.includes(BODY_CHAIN_BASE))) {
+        results.push({ name, type: obj.type, calls: [], disposition: 'baked', reason: 'pocket-missing-dependency' });
+        continue;
+      }
+      results.push({ name, type: obj.type, variable: verdict.calls.at(-1)?.out, calls: verdict.calls, disposition: 'translated', reason: verdict.reason });
+    } else if (verdict.kind === 'baked') {
+      results.push({ name, type: obj.type, calls: [], disposition: 'baked', reason: verdict.reason });
+    } else {
+      results.push({ name, type: obj.type, calls: [], disposition: 'preserved-only', reason: verdict.reason });
+    }
+  }
+
+  // also mark unreachable (cycle) objects as baked
+  for (const obj of doc.objects) {
+    if (!results.some((r) => r.name === obj.name)) {
+      results.push({ name: obj.name, type: obj.type, calls: [], disposition: 'baked', reason: 'dependency-cycle' });
+    }
+  }
+
+  // M10.3/M10.5 — split by Body: calls whose source object belongs to a Body
+  // (including the chain union/subtract calls emitted for it) go to
+  // model/<BodyName>.fai.js; everything else (loose Part features) stays in
+  // main.fai.js. When no Body has geometry, everything lands in main (the
+  // single-file shape). Aggregate entry compounds per-file roots via cad.compound.
+  const callBody = new Map<string, string>();
+  for (const r of results) {
+    const b = memberToBody.get(r.name);
+    if (b) for (const c of r.calls) callBody.set(c.out, b);
+  }
+  const bodiesWithGeo = new Set<string>();
+  for (const b of new Set(memberToBody.values())) {
+    if (chainVar.has(b)) bodiesWithGeo.add(b);
+  }
+  const files: GenResult['files'] = [];
+  let code: string;
+  let rootVar: string | undefined;
+  if (bodiesWithGeo.size > 0) {
+    const mainCalls: CadCall[] = [];
+    const perBody = new Map<string, CadCall[]>();
+    // M10c partition in DEPENDENCY ORDER: `calls` is already topologically
+    // sorted, so ONE forward pass assigns each call — to its own source's Body
+    // when known (`callBody`), else to the Body its first body-owned input went
+    // to. GOTCHA (PadTest V6): the previous implementation re-assigned such
+    // calls by APPENDING them to the end of the Body file, which broke
+    // dependency order — a Body file ended up referencing a variable declared
+    // further down (`let` TDZ ReferenceError at run time: `part8` used `part6`).
+    // Filtering `calls` in place preserves the topological order.
+    const assigned = new Map<string, string>(); // call.out → Body file name
+    // chain-head var → terminal alias (and owning Body) — needed DURING
+    // routing: a foreign chain head is never in `assigned` (it is a Body's
+    // accumulated var, not a call output), so input-body checks must consult
+    // this map to detect cross-Body references.
+    const headToTerminal = new Map<string, string>();
+    const headToBody = new Map<string, string>();
+    for (const b of bodiesWithGeo) {
+      headToTerminal.set(chainVar.get(b)!, `${b}_out`);
+      headToBody.set(chainVar.get(b)!, b);
+    }
+    const mainPending: CadCall[] = [];
+    const mainOuts = new Set<string>();
+    for (const c of calls) {
+      const own = callBody.get(c.out);
+      const inputBodies = c.inputs.map((inp) => assigned.get(inp) ?? headToBody.get(inp)).filter((b): b is string => b !== undefined);
+      const viaInput = inputBodies[0];
+      const b = own !== undefined && bodiesWithGeo.has(own) ? own : viaInput;
+      // GOTCHA (test_geomop corpus, 2026-09-20): a call whose own Body
+      // differs from an input's Body (Part::Cut with Base in another Body's
+      // chain) must NOT be emitted into its own Body file — the input
+      // variable lives in ANOTHER module and is not declared there
+      // (SEC_FREE_IDENT at check time). Same for inputs that will live in
+      // MAIN (loose Part boxes): routing is a forward pass over the
+      // topologically sorted calls, so main outputs are already known.
+      // NOTE: Body-chain fold calls (union/subtract emitted during folding)
+      // are NOT in `results`, so `own` is undefined for them — the main-input
+      // check must not depend on `own`.
+      const mixed = inputBodies.some((ib) => ib !== b) || (own !== undefined && viaInput !== undefined && viaInput !== own);
+      const touchesMain = c.inputs.some((i) => mainOuts.has(i));
+      if (b !== undefined && bodiesWithGeo.has(b) && !mixed && !touchesMain && (own === undefined || own === b)) {
+        if (!perBody.has(b)) perBody.set(b, []);
+        perBody.get(b)!.push(c);
+        assigned.set(c.out, b);
+      } else {
+        mainPending.push(c);
+        mainOuts.add(c.out);
+      }
+    }
+    for (const c of mainPending) {
+      mainCalls.push({ ...c, inputs: c.inputs.map((i) => headToTerminal.get(i) ?? i) });
+    }
+    for (const b of bodiesWithGeo) {
+      const bodyCalls = perBody.get(b) ?? [];
+      // terminal: alias the chain head to <Body>_out so the aggregate entry
+      // has a stable, name-independent reference to each Body's result.
+      const head = chainVar.get(b)!;
+      const withTerminal = [
+        ...bodyCalls,
+        { out: `${b}_out`, op: 'identity', source: b, inputs: [head], params: {} } as CadCall,
+      ];
+      files.push({ path: `model/${b}.fai.js`, code: lowerBody(withTerminal, `${baseName}/${b}`, b), body: b });
+    }
+    // main.fai.js: aggregate the per-Body terminals via cad.compound. M10c:
+    // cross-file references close through the standard relative-import
+    // contract (module-registry D6) — each Body module's terminal alias
+    // `<Body>_out` is its live shape, so a named import binds it.
+    const lines: string[] = [];
+    lines.push(`// Generated by faijs FCStd port — ${baseName} (aggregate entry)`);
+    lines.push(`// Units: mm (faijs contract; FCStd internal units are mm)`);
+    const members = [...bodiesWithGeo].map((b) => `${b}_out`);
+    // Always import the per-Body terminals: the aggregate entry references
+    // `<Body>_out` in BOTH the cad.compound (multi-Body) and the single-Body alias
+    // path, so a missing import is a SEC_FREE_IDENT parse error (GOTCHA: the
+    // single-Body branch previously emitted `let part_out = <Body>_out;` with
+    // no import). `mainCalls` may still be empty here.
+    if (members.length >= 1) {
+      for (const b of bodiesWithGeo) {
+        lines.push(`import { ${b}_out } from './${b}.fai.js'; // module ${b}`);
+      }
+    }
+    for (const c of mainCalls) {
+      const id = `s${lines.length - 2}`;
+      lines.push(`let ${c.out} = ${c.op}(${renderArgs(c)}); // ${id} ${c.source}`);
+    }
+    if (members.length > 1) {
+      rootVar = 'part_out';
+      lines.push(`let part_out = cad.compound({ members: [${members.join(', ')}] });`);
+    } else if (members.length === 1) {
+      // single Body: the imported terminal IS the result — alias keeps a
+      // stable root name for executors
+      rootVar = members[0];
+      lines.push(`let part_out = ${rootVar}; // single-Body aggregate`);
+      rootVar = 'part_out';
+    }
+    code = lines.join('\n') + '\n';
+  } else {
+    code = lower(calls, baseName);
+  }
+  return { calls, objects: results, code, files, rootVar };
+}
+
+/** M10.3 — lower one Body's calls; the last entry is the terminal alias
+ * `<Body>_out` (plain JS assignment — faijs has no identity op). */
+function lowerBody(calls: CadCall[], label: string, body: string): string {
+  const lines: string[] = [];
+  lines.push(`// Generated by faijs FCStd port — ${label}`);
+  lines.push(`// Units: mm (faijs contract; FCStd internal units are mm)`);
+  for (const call of calls) {
+    if (call.op === 'identity') {
+      // terminal alias: `let <Body>_out = <chain head>;`
+      lines.push(`let ${call.out} = ${call.inputs[0]}; // s? ${body} terminal`);
+      continue;
+    }
+    const id = `s${lines.length - 2}`;
+    lines.push(`let ${call.out} = ${call.op}(${renderArgs(call)}); // ${id} ${call.source}`);
+  }
+  return lines.join('\n') + '\n';
+}
+
+/** M5.2 — lower the call plan to .fai.js source. faijs syntax: top-level
+ * statement flow with `let partN = cad.x(...)`; no wrapper function. */
+function lower(calls: CadCall[], baseName: string): string {
+  const lines: string[] = [];
+  lines.push(`// Generated by faijs FCStd port — ${baseName}`);
+  lines.push(`// Units: mm (faijs contract; FCStd internal units are mm)`);
+  for (const call of calls) {
+    const id = `s${lines.length - 2}`; // statement id sN
+    const args = renderArgs(call);
+    lines.push(`let ${call.out} = ${call.op}(${args}); // ${id} ${call.source}`);
+  }
+  // final shape: union of root calls that nobody consumes; faijs scripts
+  // end with the output-producing statement (no return, per fixtures).
+  const consumed = new Set(calls.flatMap((c) => c.inputs));
+  const roots = calls.filter((c) => !consumed.has(c.out)).map((c) => c.out);
+  if (roots.length > 1) {
+    lines.push(`let part_out = cad.compound({ members: [${roots.join(', ')}] });`);
+  } else if (roots.length === 0) {
+    lines.push(`// no translated geometry (all baked)`);
+  }
+  return lines.join('\n') + '\n';
+}
+
+/**
+ * M5.2 — render one IR value as JS. Plain values JSON-encode (byte-identical to
+ * the pre-JsExpr output); a `JsExpr` marker renders verbatim, and a container
+ * holding one renders element-wise so the expression survives into the source.
+ */
+function renderValue(v: unknown): string {
+  if (isJsExpr(v)) return v.__jsExpr;
+  if (Array.isArray(v)) {
+    if (v.some(isJsExpr)) return `[${v.map(renderValue).join(', ')}]`;
+    return JSON.stringify(v);
+  }
+  if (v && typeof v === 'object') {
+    const entries = Object.entries(v as Record<string, unknown>);
+    if (entries.some(([, val]) => containsJsExpr(val))) {
+      return `{ ${entries.map(([k, val]) => `${k}: ${renderValue(val)}`).join(', ')} }`;
+    }
+    return JSON.stringify(v);
+  }
+  return JSON.stringify(v);
+}
+
+/** True when a value is or (recursively) contains a `JsExpr` marker. */
+function containsJsExpr(v: unknown): boolean {
+  if (isJsExpr(v)) return true;
+  if (Array.isArray(v)) return v.some(containsJsExpr);
+  if (v && typeof v === 'object') return Object.values(v as Record<string, unknown>).some(containsJsExpr);
+  return false;
+}
+
+function renderArgs(call: CadCall): string {
+  const positional: string[] = [
+    ...(call.noPositionalArgs ? [] : call.inputs.map((i) => i)),
+    ...(call.literals ?? []).map((l) => renderValue(l)),
+  ].filter((s) => s.length > 0); // M7.1: drop empty entries so we never emit `(, `
+  const named: string[] = [];
+  for (const [k, v] of Object.entries(call.params ?? {})) {
+    if (v === undefined) continue;
+    // GOTCHA (ArchDetail s444, 2026-09-21): `cad.compound`'s `members` are
+    // LEXICAL VARIABLE NAMES, not data strings — render them bare, like
+    // positional inputs. renderValue would quote them and the op would
+    // receive strings with no BREP handle
+    // ("compound members are not all on the BREP chain").
+    if (k === 'members' && Array.isArray(v)) {
+      named.push(`members: [${v.join(', ')}]`);
+      continue;
+    }
+    named.push(`${k}: ${renderValue(v)}`);
+  }
+  const namedBlock = named.length ? `{ ${named.join(', ')} }` : '';
+  // M7.1: no leading comma when there are no positional args — a call with only
+  // named params must render as `cad.sketch({ ... })`, never `cad.sketch(, {...})`.
+  const rest = namedBlock ? (positional.length ? `, ${namedBlock}` : namedBlock) : '';
+  return `${positional.join(', ')}${rest}`;
+}

@@ -1,0 +1,344 @@
+/**
+ * B0 — THE FCStd → .fai.zip conversion pipeline (batch CLI and tests share it;
+ * `src/fcstd/cli.ts` is its only CLI). Returns a structured summary; the caller
+ * decides exit codes and output formatting (C4: batch driver must never absorb
+ * failures).
+ *
+ * 2026-09-20: the M5.4-era dev script `scripts/fcstd-to-fai-zip.ts` was a second
+ * implementation of this same pipeline (no C4 audit, no exit-code contract) and
+ * has been deleted. Whether the conversion entry is published or not, this file
+ * is the single implementation.
+ *
+ * Dispositions (plan §2, C4): translated | python-baked | preserved-only.
+ * Any other baked reason = translation gap → result.ok = false, no zip
+ * written (final check `auditMapping`).
+ */
+import { readFileSync } from 'node:fs';
+import { unpackFcstd, memberText } from './unpack.js';
+import { parseFilletEdges, type FilletEdgeEntry } from './fillet-edges.js';
+import { parseDocumentXml } from './document.js';
+import { parseSketchObject } from './sketch-parse.js';
+import { createPlanegcsSolver } from './planegcs-backend.js';
+import { classifySketch } from './sketch-verify.js';
+import { resolveExternalGeometry } from './external-geo.js';
+import { extractContours } from './contour.js';
+import type { Contour } from './contour.js';
+import { generateModel } from './codegen.js';
+import type { Placement } from './placement.js';
+import { effectivePlacement } from './attachment.js';
+import { buildFaiZip } from './build-fai-zip.js';
+import { isOk } from '@faicad/faijs/api/result';
+import { zipSync, unzipSync, strToU8 } from 'fflate';
+import {
+  STRUCTURAL_TYPES,
+  STRUCTURAL_TYPES_EXTENDED,
+  isFemStructural,
+  isNonModelingType,
+} from './structural-types.js';
+
+// Kept on this module's public surface: these sets are part of the
+// `./fcstd-convert` contract that the batch project and its tests consume. The
+// definitions live in `structural-types.ts` so codegen can share them without
+// a circular import.
+export { STRUCTURAL_TYPES, STRUCTURAL_TYPES_EXTENDED, isFemStructural };
+
+/** V2 tolerance: solver must reproduce stored geometry (single source). */
+export const SKETCH_T1 = 1e-6;
+
+/** Dispositions allowed in a conforming container (C4). */
+export const ALLOWED_DISPOSITIONS = new Set(['translated', 'python-baked', 'preserved-only']);
+
+/**
+ * Optional knobs for `convertFcstdFile`.
+ */
+export interface ConvertOptions {
+  /**
+   * Return the container bytes even when the mapping audit reports gaps.
+   *
+   * Diagnostics only. C4 requires that a gapped document produces **no
+   * product**, and the CLI never sets this — `ok` stays false and the exit
+   * code stays 2 regardless. It exists because everything the pipeline built
+   * before the audit is otherwise unobservable for exactly the documents that
+   * need triage: gaps and non-L0 sketches usually co-occur (a sketch the
+   * solver cannot handle usually starves the features built on it), so
+   * "which contour assets / mapping entries would this document have had"
+   * cannot be answered from `gaps[]` alone.
+   */
+  keepGappedContainer?: boolean;
+}
+
+/** Structured result of one FCStd → .fai.zip conversion; the caller decides exit codes and formatting. */
+export interface ConvertSummary {
+  /** input file path */
+  file: string;
+  /** conversion succeeded AND mapping final check passed */
+  ok: boolean;
+  /** translation gaps (non-Python baked) — empty when ok */
+  gaps: { name: string; type: string; reason: string }[];
+  counts: { translated: number; pythonBaked: number; preservedOnly: number; baked: number };
+  sketches: { total: number; l0: number; l1: number; l2: number };
+  /** container bytes (undefined when ok=false, unless `keepGappedContainer`) */
+  zip?: Uint8Array;
+  /** human-readable failure when the pipeline itself failed */
+  error?: string;
+  elapsedMs: number;
+}
+
+/**
+ * C4 final check: reclassify `baked` entries. A baked disposition is only
+ * legitimate for Python-opaque objects (python-baked), structural/datum
+ * containers (preserved-only), or preserved display members. Everything
+ * else is a translation gap.
+ */
+function auditMapping(
+  mapping: { objects: { name: string; type: string; disposition: string; reason?: string }[] },
+): ConvertSummary['gaps'] {
+  const gaps: ConvertSummary['gaps'] = [];
+  for (const o of mapping.objects) {
+    if (o.disposition === 'baked') {
+      // python-opaque stays legitimate but is renamed for the ledger
+      if (o.reason === 'python-opaque') {
+        o.disposition = 'python-baked';
+      } else if (STRUCTURAL_TYPES.has(o.type) || isFemStructural(o.type) || STRUCTURAL_TYPES_EXTENDED.has(o.type)) {
+        o.disposition = 'preserved-only';
+        o.reason = o.reason
+          ?? (isFemStructural(o.type) ? 'fem-simulation'
+            : STRUCTURAL_TYPES_EXTENDED.has(o.type) ? 'container-link' : 'structural');
+      } else {
+        gaps.push({ name: o.name, type: o.type, reason: o.reason ?? 'unspecified' });
+      }
+    }
+  }
+  return gaps;
+}
+
+/**
+ * Convert one FCStd file through the full pipeline (unpack → parse → sketch
+ * solving → codegen → container build) and return a structured summary.
+ * @param input path to the .FCStd file to convert
+ * @param opts optional knobs (see {@link ConvertOptions}); defaults keep the C4 contract
+ * @returns a summary with ok=false (and no zip, unless `keepGappedContainer`) on any pipeline failure or translation gap
+ */
+export async function convertFcstdFile(input: string, opts?: ConvertOptions): Promise<ConvertSummary> {
+  const t0 = Date.now();
+  const baseName = input.replace(/^.*[/\\]/, '').replace(/\.fcstd$/i, '');
+  const fail = (error: string): ConvertSummary => ({
+    file: input, ok: false, gaps: [],
+    counts: { translated: 0, pythonBaked: 0, preservedOnly: 0, baked: 0 },
+    sketches: { total: 0, l0: 0, l1: 0, l2: 0 }, error, elapsedMs: Date.now() - t0,
+  });
+
+  let raw: Uint8Array;
+  try {
+    raw = new Uint8Array(readFileSync(input));
+  } catch (e) {
+    return fail(`read failed: ${(e as Error).message}`);
+  }
+  const unpacked = unpackFcstd(raw);
+  if (!isOk(unpacked)) return fail(`unpack failed: ${JSON.stringify(unpacked.error)}`);
+  const xml = memberText(unpacked.value, 'Document.xml');
+  if (xml === undefined) return fail('Document.xml missing');
+  const doc = parseDocumentXml(xml);
+  if (!isOk(doc)) return fail(`parse failed: ${doc.error.message}`);
+
+  // M3: solve every sketch (same pipeline as the dev script)
+  const solver = await createPlanegcsSolver();
+  const sketchVerdict = new Map<string, { level: 'L0' | 'L1' | 'L2'; reason?: string; loopCount?: number }>();
+  const sketchContours = new Map<string, Contour[]>();
+  for (const obj of doc.value.objects) {
+    if (obj.type !== 'Sketcher::SketchObject') continue;
+    const sk = parseSketchObject(obj.properties.get('Geometry'), obj.properties.get('Constraints'), false);
+    const offPlane = sk.geoms.some((g) => {
+      const zs = g.kind === 'point' ? [g.z]
+        : g.kind === 'line' ? [g.z1, g.z2]
+        : g.kind === 'bspline' ? [g.z1, g.z2] // P4: spline endpoints carry z
+        : [g.cz];
+      return zs.some((z) => Math.abs(z) > 1e-9);
+    });
+    const preBlocked =
+      offPlane ? 'sketch-geometry-off-plane'
+      : sk.geoms.some((g) => !Number.isFinite((g as { x?: number }).x ?? 0)) ? 'unsupported-geometry'
+      : undefined;
+    if (preBlocked) {
+      sketchVerdict.set(obj.name, { level: 'L2', reason: preBlocked });
+      continue;
+    }
+    let external: { geoId: number; polyline: [number, number][] }[] | undefined;
+    if (sk.externalGeoIds.length > 0) {
+      const ext = await resolveExternalGeometry(
+        obj.properties.get('ExternalGeometry'), doc.value, unpacked.value, obj.properties.get('Placement'),
+      );
+      // P3-3 (2026-09-24): external EDGES are discretized to polylines — a
+      // straight edge yields 2 points, an ARC yields many. The old
+      // `length === 2` filter silently dropped every arc link with no
+      // failure record (sketch baked `external-geometry-unresolved: no
+      // links` while resolveExternalGeometry had actually succeeded). The
+      // solver pins multi-point polylines as fixed sampled targets
+      // (planegcs-backend M6.3), so any deduped polyline >= 2 is usable.
+      const usable = ext.links.filter((l) => l.polyline.length >= 2);
+      if (usable.length === 0) {
+        sketchVerdict.set(obj.name, {
+          level: 'L2',
+          reason: `external-geometry-unresolved: ${ext.failures[0]?.reason ?? 'no links'}`,
+        });
+        continue;
+      }
+      external = usable.map((l, i) => ({ geoId: -3 - i, polyline: l.polyline }));
+    }
+    try {
+      const r = await solver.solve(sk.geoms, sk.constraints, external);
+      if (!isOk(r)) {
+        sketchVerdict.set(obj.name, { level: 'L2', reason: 'solver-error' });
+        continue;
+      }
+      const verdict = classifySketch(r.value, sk.geoms, SKETCH_T1);
+      const contours = verdict.level === 'L0' ? extractContours(r.value.geoms) : [];
+      sketchVerdict.set(obj.name, { ...verdict, loopCount: contours.length });
+      if (verdict.level === 'L0') sketchContours.set(obj.name, contours);
+    } catch (e) {
+      sketchVerdict.set(obj.name, { level: 'L2', reason: `solver-throw: ${(e as Error).message.slice(0, 60)}` });
+    }
+  }
+
+  // M4/M5: translate + codegen
+  // H3: attachment-resolved placements — an attached sketch's stored Placement
+  // is recomputed by FreeCAD from Support ∘ AttachmentOffset; resolve the chain
+  // so non-XY-plane sketches land on their support frame (fall back to the
+  // stored value when the attachment is deactivated or unresolvable).
+  const placements = new Map<string, Placement>();
+  for (const obj of doc.value.objects) {
+    placements.set(obj.name, effectivePlacement(obj, placements));
+  }
+  // H7: objects whose Shape is stored as a ZIP .brp member (pure-Shape
+  // carriers, e.g. Part::Feature) — collected from the archive members so the
+  // translator can record `shape-asset` instead of a translation gap.
+  // H7 follow-up: SubShape carriers (feature result caches in Body-less
+  // PartDesign files) join the same set — the translator only honors SubShape
+  // evidence for features whose SubShape .brp member exists.
+  // GOTCHA (PadTest, 2026-09-21): non-modeling types are EXCLUDED. A
+  // `PartDesign::Plane` also has a Shape .brp — the plane face — so the
+  // generic rule imported it as a solid and the Body chain unioned the datum
+  // plane into the part (a bare face cannot take part in the boolean). A
+  // datum's shape is support geometry for attachment/up-to resolution.
+  const shapeCarriers = new Set<string>();
+  // E4: objects whose Shape/SubShape `file` attribute points at a missing or
+  // ZERO-BYTE member (FC_site_simple-102: `Site.Shape.brp` exists but is 0
+  // bytes). They must surface as an explicit convert-time gap — without this
+  // the object falls through to python-opaque and the broken-asset fact is
+  // silently swallowed into `python-baked` (the product then reports no
+  // geometry instead of naming the defect).
+  const brokenShapeAssets = new Set<string>();
+  for (const obj of doc.value.objects) {
+    if (isNonModelingType(obj.type)) continue;
+    const shapeFile = obj.properties.get('Shape')?.children[0]?.attributes['file'];
+    const subShapeFile = obj.properties.get('SubShape')?.children[0]?.attributes['file'];
+    const shapeOk = shapeFile !== undefined && !!memberText(unpacked.value, shapeFile);
+    const subShapeOk = subShapeFile !== undefined && !!memberText(unpacked.value, subShapeFile);
+    if (shapeOk || subShapeOk) shapeCarriers.add(obj.name);
+    else if (shapeFile !== undefined || subShapeFile !== undefined) brokenShapeAssets.add(obj.name);
+  }
+
+  // P8: parse the binary PropertyFilletEdges members for Part::Chamfer /
+  // Part::Fillet objects (edge selection + sizes do NOT live in Document.xml).
+  const filletEdgesData = new Map<string, FilletEdgeEntry[]>();
+  for (const obj of doc.value.objects) {
+    if (obj.type !== 'Part::Chamfer' && obj.type !== 'Part::Fillet') continue;
+    const file = obj.properties.get('Edges')?.children[0]?.children[0]?.attributes['file']
+      ?? obj.properties.get('Edges')?.children[0]?.attributes['file'];
+    if (!file) continue;
+    const parsed = parseFilletEdges(unpacked.value.members.get(file));
+    if (parsed) filletEdgesData.set(obj.name, parsed);
+  }
+
+  let gen;
+  try {
+    gen = generateModel(
+      doc.value, sketchVerdict, sketchContours, baseName, placements, shapeCarriers,
+      brokenShapeAssets, filletEdgesData,
+    );
+  } catch (e) {
+    return fail(`codegen failed: ${(e as Error).message}`);
+  }
+
+  // M2: container with shadow, then inject model/ + updated mapping
+  const built = buildFaiZip(unpacked.value, baseName + '.FCStd');
+  if (built.error || !built.result) return fail(`container build failed: ${built.error ?? 'unknown'}`);
+  const members: Record<string, Uint8Array> = {};
+  for (const [k, v] of Object.entries(unzipSync(built.result.zip))) members[k] = v;
+  members['model/main.fai.js'] = strToU8(gen.code);
+  for (const f of gen.files) members[f.path] = strToU8(f.code);
+
+  const mapping = built.result.mapping;
+  for (const o of gen.objects) {
+    const entry = mapping.objects.find((e) => e.name === o.name);
+    if (!entry) continue;
+    entry.disposition = o.disposition;
+    if (o.reason) entry.reason = o.reason;
+    if (o.sketch) {
+      entry.sketch = {
+        level: o.sketch.level === 'L0' ? 'solved' : o.sketch.level === 'L1' ? 'initial-value' : 'baked',
+        reason: o.sketch.reason,
+        gcs: o.sketch,
+      };
+    }
+    if (o.disposition === 'translated' && !entry.artifacts.includes('model/main.fai.js')) {
+      entry.artifacts.push('model/main.fai.js');
+    }
+  }
+
+  // M11.4 (G9): L1/L2 sketches persist raw geometry as a contour asset
+  for (const obj of doc.value.objects) {
+    if (obj.type !== 'Sketcher::SketchObject') continue;
+    const verdict = sketchVerdict.get(obj.name);
+    if (!verdict || verdict.level === 'L0') continue;
+    const sk = parseSketchObject(obj.properties.get('Geometry'), obj.properties.get('Constraints'), false);
+    const asset = {
+      sketch: obj.name,
+      level: verdict.level,
+      reason: verdict.reason,
+      geoms: sk.geoms,
+      constraints: sk.constraints.map((c) => ({ index: c.index, type: c.type, refs: c.refs, value: c.value, isDriving: c.isDriving })),
+    };
+    const path = `assets/${obj.name}.contour.json`;
+    members[path] = strToU8(JSON.stringify(asset, null, 2));
+    const entry = mapping.objects.find((e) => e.name === obj.name);
+    if (entry && !entry.artifacts.includes(path)) entry.artifacts.push(path);
+  }
+
+  // C4 final check: reclassify python-opaque; everything else baked = gap
+  const gaps = auditMapping(mapping);
+  members['mapping.json'] = strToU8(JSON.stringify(mapping, null, 2));
+
+  const counts = { translated: 0, pythonBaked: 0, preservedOnly: 0, baked: 0 };
+  for (const o of mapping.objects) {
+    const d = o.disposition as string; // auditMapping may rename baked -> python-baked
+    if (d === 'translated') counts.translated++;
+    else if (d === 'python-baked') counts.pythonBaked++;
+    else if (d === 'preserved-only') counts.preservedOnly++;
+    else counts.baked++;
+  }
+  const sketches = { total: sketchVerdict.size, l0: 0, l1: 0, l2: 0 };
+  for (const v of sketchVerdict.values()) sketches[v.level.toLowerCase() as 'l0' | 'l1' | 'l2']++;
+
+  if (gaps.length > 0) {
+    // C4: translation gaps → no container produced (exit contract: 2).
+    // `keepGappedContainer` is a diagnostics-only escape hatch (see ConvertOptions).
+    if (!opts?.keepGappedContainer) {
+      return { file: input, ok: false, gaps, counts, sketches, elapsedMs: Date.now() - t0 };
+    }
+    const gappedZip = zipSync(members, { level: 6 });
+    return { file: input, ok: false, gaps, counts, sketches, zip: gappedZip, elapsedMs: Date.now() - t0 };
+  }
+
+  const zip = zipSync(members, { level: 6 });
+  return { file: input, ok: true, gaps, counts, sketches, zip, elapsedMs: Date.now() - t0 };
+}
+
+// Public conversion surface re-exports (former top-level `fcstd-convert` barrel).
+// The batch project's tooling consumes these without reaching into `src/`.
+export { createPlanegcsSolver, planegcsWasmPath } from './planegcs-backend.js';
+export { classifySketch, maxPointDistance } from './sketch-verify.js';
+export type { SketchVerdict } from './sketch-verify.js';
+export { resolveExternalGeometry } from './external-geo.js';
+export type { ExternalGeoResult, ExternalLink } from './external-geo.js';
+export { isWhitelisted } from './feature-translate.js';

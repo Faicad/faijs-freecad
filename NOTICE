@@ -1,0 +1,20 @@
+faijs — @faicad/faijs-fcstd NOTICE
+==================================
+
+This package implements the FCStd reader and the `.fai.js` conversion
+pipeline for the faijs CAD engine. The sketch constraint solver is
+provided at runtime by the `@salusoft89/planegcs` package (dependencies,
+not vendored here); it carries its own license.
+
+Runtime dependencies (not distributed inside this package)
+----------------------------------------------------------
+
+- `@faicad/faijs` — MIT (peer; engine Result/occt-kernel surface)
+- `occt-wasm` — JS glue: MIT OR Apache-2.0; the compiled WASM output is
+  LGPL-3.0 (Open CASCADE Technology), loaded by the host at runtime.
+- `@salusoft89/planegcs` — LGPL-2.1-or-later (planegcs, FreeCAD sketch
+  solver port)
+- `@xmldom/xmldom` — MIT
+- `fflate` — MIT
+
+Full texts are available at the respective package sources.
