@@ -1346,9 +1346,16 @@ export function translateObject(
     }
     case 'Part::Sweep': {
       // P2-3: FreeCAD Part::Sweep → cad.sweep(profile, spine, opts).
-      // Profile = the section (face/wire); Spine = the path (wire). Both are
-      // `PropertyLink` to already-translated objects; cad.sweep adapts a face
-      // to its outer-ring wire for either argument (api/sweep.ts toProfileWireView).
+      // Real FCStd (corpus-verified 2026-09-24): the section is carried in
+      // `Sections` (App::PropertyLinkList, usually length 1) — NOT `Profile`,
+      // which is absent in the corpus. We accept either, preferring the
+      // standard `Profile` and falling back to `Sections[0]`.
+      // The path is `Spine` (App::PropertyLinkSub): { obj: sketch, subs: edges }.
+      // We pass the base object as the spine; cad.sweep now tolerates a face
+      // argument and takes its outer-ring wire as the path (api/sweep.ts
+      // toProfileWireView), which is exact for the dominant case where the
+      // selected sub-edges ARE the full outline. Multi-edge sub-path selection
+      // that is a strict subset is a P4-1 refinement (curve/attachment).
       // Mode: Frenet (0, default) / Binormal (1) / Auxiliary (2). Auxiliary
       // needs a second supporting spine we do not carry → honest bake. Check
       // this BEFORE dependency resolution: an unsupported mode is a property of
@@ -1358,8 +1365,9 @@ export function translateObject(
       if (modeRaw === 'Auxiliary' || modeRaw === '2') {
         return { kind: 'baked', reason: 'sweep-auxiliary-unsupported' };
       }
-      const sweepProfile = propLink(obj, 'Profile');
-      const sweepSpine = propLink(obj, 'Spine');
+      const sweepProfile = propLink(obj, 'Profile') ?? propLinkList(obj, 'Sections')[0];
+      const sweepSpineSub = propLinkSub(obj, 'Spine');
+      const sweepSpine = sweepSpineSub?.obj;
       const profileVar = sweepProfile ? inputVar(sweepProfile) : undefined;
       const spineVar = sweepSpine ? inputVar(sweepSpine) : undefined;
       if (!profileVar) {

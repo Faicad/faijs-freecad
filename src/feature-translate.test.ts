@@ -1457,6 +1457,30 @@ describe('P2-3 sweep / loft / helix (Part-workbench curve/loft features)', () =>
     expect(v).toMatchObject({ kind: 'baked', reason: 'sweep-missing-profile' });
   });
 
+  it('translates Part::Sweep with the real corpus structure (Sections + Spine LinkSub)', () => {
+    // 2026-09-24 corpus finding: real Part::Sweep carries the section in
+    // `Sections` (App::PropertyLinkList, len 1), NOT `Profile`, and the path in
+    // `Spine` (App::PropertyLinkSub { obj, subs }). The spine base is passed as
+    // the spine argument; cad.sweep tolerates the face and uses its outer ring.
+    const sweep = obj('Part::Sweep', 'Sweep', [
+      linkListProp('Sections', ['SketchA']),
+      linkSubProp('Spine', 'SketchB', ['Edge2', 'Edge1']),
+      enumProp('Mode', '0'),
+    ]);
+    const v = translateObject(
+      sweep,
+      (dep) => (dep === 'SketchA' ? 'a0' : dep === 'SketchB' ? 'b0' : undefined),
+      [sweep],
+    );
+    expect(v.kind).toBe('translated');
+    if (v.kind === 'translated') {
+      const call = v.calls[0]!;
+      expect(call.op).toBe('cad.sweep');
+      expect(call.inputs).toEqual(['a0', 'b0']);
+      expect(call.params.frenet).toBe(true);
+    }
+  });
+
   it('translates Part::Loft → cad.loft([s1, s2]) with sections as a positional array literal', () => {
     const loft = obj('Part::Loft', 'Loft', [linkListProp('Sections', ['SketchA', 'SketchB'])]);
     const v = translateObject(
