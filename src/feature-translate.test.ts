@@ -1384,3 +1384,144 @@ describe('H7 Part::Feature pure-Shape carrier', () => {
     }
   });
 });
+
+describe('P2-3 sweep / loft / helix (Part-workbench curve/loft features)', () => {
+  function linkProp(name: string, target: string): [string, FcstdProperty] {
+    return [name, {
+      name, type: 'App::PropertyLink', tagName: 'Property',
+      children: [{ name: 'Link', type: '', tagName: 'Link', children: [], valueXml: '', valueText: '', attributes: { value: target } }],
+      valueText: '', attributes: {},
+    }];
+  }
+  function linkListProp(name: string, targets: string[]): [string, FcstdProperty] {
+    return [name, {
+      name, type: 'App::PropertyLinkList', tagName: 'Property',
+      children: [{
+        name: 'LinkList', type: '', tagName: 'LinkList',
+        children: targets.map((t) => ({
+          name: 'Link', type: '', tagName: 'Link', children: [], valueXml: '', valueText: '', attributes: { value: t },
+        })), valueXml: '', valueText: '', attributes: {},
+      }],
+      valueText: '', attributes: {},
+    }];
+  }
+  function enumProp(name: string, value: string): [string, FcstdProperty] {
+    return [name, {
+      name, type: 'App::PropertyEnumeration', tagName: 'Property',
+      children: [{ name: 'Integer', type: '', tagName: 'Integer', children: [], valueXml: '', valueText: '', attributes: { value } }],
+      valueText: '', attributes: {},
+    }];
+  }
+
+  it('whitelists the three Part-workbench sweep/loft/helix types', () => {
+    expect(isWhitelisted('Part::Sweep')).toBe(true);
+    expect(isWhitelisted('Part::Loft')).toBe(true);
+    expect(isWhitelisted('Part::Helix')).toBe(true);
+  });
+
+  it('translates Part::Sweep → cad.sweep(profile, spine) with Frenet default', () => {
+    const profile = obj('Part::Circle', 'Circle', [prop('Radius', { name: 'Float', attrs: { value: '5' } })]);
+    const spine = obj('Part::Line', 'Line', []);
+    const sweep = obj('Part::Sweep', 'Sweep', [
+      linkProp('Profile', 'Circle'),
+      linkProp('Spine', 'Line'),
+      enumProp('Mode', '0'), // Frenet
+    ]);
+    const v = translateObject(
+      sweep,
+      (dep) => (dep === 'Circle' ? 'circle0' : dep === 'Line' ? 'line0' : undefined),
+      [sweep, profile, spine],
+    );
+    expect(v.kind).toBe('translated');
+    if (v.kind === 'translated') {
+      const call = v.calls[0]!;
+      expect(call.op).toBe('cad.sweep');
+      expect(call.inputs).toEqual(['circle0', 'line0']);
+      expect(call.params.frenet).toBe(true);
+    }
+  });
+
+  it('bakes Part::Sweep with Auxiliary mode (needs a second spine — unsupported)', () => {
+    const sweep = obj('Part::Sweep', 'Sweep', [
+      linkProp('Profile', 'Circle'),
+      linkProp('Spine', 'Line'),
+      enumProp('Mode', '2'), // Auxiliary
+    ]);
+    const v = translateObject(sweep, () => undefined, [sweep]);
+    expect(v).toMatchObject({ kind: 'baked', reason: 'sweep-auxiliary-unsupported' });
+  });
+
+  it('bakes Part::Sweep missing its profile (explicit, no silent loss)', () => {
+    const sweep = obj('Part::Sweep', 'Sweep', [linkProp('Spine', 'Line')]);
+    const v = translateObject(sweep, () => undefined, [sweep]);
+    expect(v).toMatchObject({ kind: 'baked', reason: 'sweep-missing-profile' });
+  });
+
+  it('translates Part::Loft → cad.loft([s1, s2]) with sections as a positional array literal', () => {
+    const loft = obj('Part::Loft', 'Loft', [linkListProp('Sections', ['SketchA', 'SketchB'])]);
+    const v = translateObject(
+      loft,
+      (dep) => (dep === 'SketchA' ? 'a0' : dep === 'SketchB' ? 'b0' : undefined),
+      [loft],
+    );
+    expect(v.kind).toBe('translated');
+    if (v.kind === 'translated') {
+      const call = v.calls[0]!;
+      expect(call.op).toBe('cad.loft');
+      const lit = call.literals?.[0];
+      // GOTCHA: the section array is a JsExpr literal so it survives codegen
+      // renaming (inputVar already returns the renamed var), cf. edgeRefArgs.
+      expect(isJsExpr(lit) ? lit.__jsExpr : lit).toBe('[a0, b0]');
+    }
+  });
+
+  it('bakes Part::Loft with fewer than two sections', () => {
+    const loft = obj('Part::Loft', 'Loft', [linkListProp('Sections', ['SketchA'])]);
+    const v = translateObject(loft, () => undefined, [loft]);
+    expect(v).toMatchObject({ kind: 'baked', reason: 'loft-missing-sections' });
+  });
+
+  it('bakes Part::Loft with Closed=true (option not exposed by cad.loft)', () => {
+    const loft = obj('Part::Loft', 'Loft', [
+      linkListProp('Sections', ['SketchA', 'SketchB']),
+      prop('Closed', { name: 'Bool', attrs: { value: 'true' } }),
+    ]);
+    const v = translateObject(loft, () => undefined, [loft]);
+    expect(v).toMatchObject({ kind: 'baked', reason: 'loft-closed-unsupported' });
+  });
+
+  it('translates Part::Helix → cad.helix({radius,pitch,turns}) deriving turns from Height/Pitch', () => {
+    const h = obj('Part::Helix', 'Helix', [
+      prop('Radius', { name: 'Float', attrs: { value: '5' } }),
+      prop('Pitch', { name: 'Float', attrs: { value: '2' } }),
+      prop('Height', { name: 'Float', attrs: { value: '20' } }),
+    ]);
+    const v = translateObject(h, () => undefined, [h]);
+    expect(v.kind).toBe('translated');
+    if (v.kind === 'translated') {
+      const call = v.calls[0]!;
+      expect(call.op).toBe('cad.helix');
+      expect(call.params).toEqual({ radius: 5, pitch: 2, turns: 10 });
+    }
+  });
+
+  it('bakes Part::Helix with a cone Angle (helix-cone-unsupported)', () => {
+    const h = obj('Part::Helix', 'Helix', [
+      prop('Radius', { name: 'Float', attrs: { value: '5' } }),
+      prop('Pitch', { name: 'Float', attrs: { value: '2' } }),
+      prop('Height', { name: 'Float', attrs: { value: '20' } }),
+      prop('Angle', { name: 'Float', attrs: { value: '15' } }),
+    ]);
+    const v = translateObject(h, () => undefined, [h]);
+    expect(v).toMatchObject({ kind: 'baked', reason: 'helix-cone-unsupported' });
+  });
+
+  it('bakes Part::Helix missing radius (explicit, no silent loss)', () => {
+    const h = obj('Part::Helix', 'Helix', [
+      prop('Pitch', { name: 'Float', attrs: { value: '2' } }),
+      prop('Height', { name: 'Float', attrs: { value: '20' } }),
+    ]);
+    const v = translateObject(h, () => undefined, [h]);
+    expect(v).toMatchObject({ kind: 'baked', reason: 'helix-missing-radius' });
+  });
+});

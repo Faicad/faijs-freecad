@@ -133,6 +133,13 @@ const WHITELIST = new Set([
   // Part::Chamfer (196 corpus occurrences). cad.fillet (M1) takes ONE uniform
   // radius for all edges, so per-edge / two-distance differences bake.
   'Part::Fillet',
+  // P2-3 (2026-09-24): sweep/loft/helix translation branch. The kernel ops
+  // `cad.sweep` / `cad.loft` / `cad.helix` (core, a4f9f30 / b0c4a92) are
+  // already implemented; this wires the FCStd translator to emit them.
+  // Corpus (library-profile.md): Part::Sweep 268, Part::Loft 107, Part::Helix <63.
+  'Part::Sweep',
+  'Part::Loft',
+  'Part::Helix',
 ]);
 
 /**
@@ -535,6 +542,15 @@ export function translateObject(
     }
     return { kind: 'baked', reason: `type-not-whitelisted: ${obj.type}` };
   }
+  /** Map FreeCAD Part::Sweep `Transition` (enum label or index) → cad.sweep transitionMode. */
+  function normalizeSweepTransition(raw: string | undefined): 'right' | 'transformed' | 'round' | undefined {
+    if (raw === undefined) return undefined;
+    if (raw === 'RightAngle' || raw === '0') return 'right';
+    if (raw === 'Transformed' || raw === '1') return 'transformed';
+    if (raw === 'Round' || raw === '2') return 'round';
+    return undefined;
+  }
+
   const out = obj.name; // M5 renames to partN
   switch (obj.type) {
     case 'Part::Box': {
@@ -1325,6 +1341,102 @@ export function translateObject(
         calls: [{
           out, op: 'cad.fillet', source: obj.name, inputs: [fBaseVar],
           params: { edges: edgeRefArgs(fBaseVar, fEntries.map((e) => e.edge)), radius: fRadius },
+        }],
+      };
+    }
+    case 'Part::Sweep': {
+      // P2-3: FreeCAD Part::Sweep → cad.sweep(profile, spine, opts).
+      // Profile = the section (face/wire); Spine = the path (wire). Both are
+      // `PropertyLink` to already-translated objects; cad.sweep adapts a face
+      // to its outer-ring wire for either argument (api/sweep.ts toProfileWireView).
+      // Mode: Frenet (0, default) / Binormal (1) / Auxiliary (2). Auxiliary
+      // needs a second supporting spine we do not carry → honest bake. Check
+      // this BEFORE dependency resolution: an unsupported mode is a property of
+      // this object alone, independent of whether its profile/spine resolved
+      // (cf. the "Auxiliary mode" test where inputVar is stubbed away).
+      const modeRaw = propStr(obj, 'Mode');
+      if (modeRaw === 'Auxiliary' || modeRaw === '2') {
+        return { kind: 'baked', reason: 'sweep-auxiliary-unsupported' };
+      }
+      const sweepProfile = propLink(obj, 'Profile');
+      const sweepSpine = propLink(obj, 'Spine');
+      const profileVar = sweepProfile ? inputVar(sweepProfile) : undefined;
+      const spineVar = sweepSpine ? inputVar(sweepSpine) : undefined;
+      if (!profileVar) {
+        return { kind: 'baked', reason: sweepProfile ? `sweep-profile-baked-upstream:${sweepProfile}` : 'sweep-missing-profile' };
+      }
+      if (!spineVar) {
+        return { kind: 'baked', reason: sweepSpine ? `sweep-spine-baked-upstream:${sweepSpine}` : 'sweep-missing-spine' };
+      }
+      const frenet = modeRaw === undefined || modeRaw === 'Frenet' || modeRaw === '0' || propBool(obj, 'Frenet');
+      const transition = normalizeSweepTransition(propStr(obj, 'Transition'));
+      const opts: Record<string, unknown> = {};
+      if (frenet) opts.frenet = true;
+      if (transition) opts.transitionMode = transition;
+      return {
+        kind: 'translated',
+        calls: [{
+          out, op: 'cad.sweep', source: obj.name, inputs: [profileVar, spineVar], params: opts,
+        }],
+      };
+    }
+    case 'Part::Loft': {
+      // P2-3: FreeCAD Part::Loft → cad.loft([sections], opts). `Sections` is a
+      // PropertyLinkList of already-translated profile faces/wires; cad.loft
+      // adapts each face → outer-ring wire (api/loft.ts toProfileWireView).
+      const sections = propLinkList(obj, 'Sections');
+      // Closed loft needs a `closed` option cad.loft does not expose → honest
+      // bake. Check this BEFORE dependency resolution: an unsupported option is
+      // a property of this object alone, independent of whether its sections
+      // resolved (cf. the "Closed=true" test where inputVar is stubbed away).
+      if (propBool(obj, 'Closed')) return { kind: 'baked', reason: 'loft-closed-unsupported' };
+      const sectionVars = sections.map((s) => inputVar(s));
+      if (sections.length < 2) {
+        // Genuinely fewer than two profiles → not a loft, no upstream involvement.
+        return { kind: 'baked', reason: 'loft-missing-sections' };
+      }
+      const missingIdx = sectionVars.findIndex((v) => v === undefined);
+      if (missingIdx >= 0) {
+        // A section resolved to an object that itself got baked upstream → we
+        // cannot reconstruct its geometry here → honest bake with the culprit.
+        return { kind: 'baked', reason: `loft-section-baked-upstream:${sections[missingIdx]}` };
+      }
+      const ruled = propBool(obj, 'Ruled'); // FC default true; emit only when false
+      const params: Record<string, unknown> = {};
+      if (ruled === false) params.ruled = false;
+      // Sections rendered as a positional array literal. Remap-safe: inputVar
+      // already returns the renamed var (deps are processed before dependents,
+      // cf. the fillet edgeRefArgs JsExpr precedent).
+      return {
+        kind: 'translated',
+        calls: [{
+          out, op: 'cad.loft', source: obj.name, inputs: [],
+          literals: [jsExpr(`[${sectionVars.join(', ')}]`)], params,
+        }],
+      };
+    }
+    case 'Part::Helix': {
+      // P2-3: FreeCAD Part::Helix (3D curve primitive) → cad.helix({radius,pitch,turns}).
+      // cad.helix yields a 1D curve usable as a sweep spine. FC Helix props:
+      // Radius / Pitch / Height (+ optional Angle cone taper, Turns alias).
+      // The object's own Placement is applied by codegen's normal cad.place step,
+      // so we do NOT bake origin here (that would double-place).
+      const hRadius = propNum(obj, 'Radius');
+      const hPitch = propNum(obj, 'Pitch');
+      const hHeight = propNum(obj, 'Height');
+      const hTurns = propNum(obj, 'Turns');
+      const hAngle = propNum(obj, 'Angle') ?? 0;
+      if (!(hRadius !== undefined && hRadius > 0)) return { kind: 'baked', reason: 'helix-missing-radius' };
+      if (!(hPitch !== undefined && hPitch !== 0)) return { kind: 'baked', reason: 'helix-missing-pitch' };
+      // cad.helix is cylindrical; a cone-taper helix is unsupported → honest bake.
+      if (hAngle !== 0) return { kind: 'baked', reason: 'helix-cone-unsupported' };
+      const turns = hHeight !== undefined ? hHeight / hPitch : hTurns;
+      if (!(turns !== undefined && turns > 0)) return { kind: 'baked', reason: 'helix-missing-turns' };
+      return {
+        kind: 'translated',
+        calls: [{
+          out, op: 'cad.helix', source: obj.name, inputs: [],
+          params: { radius: hRadius, pitch: hPitch, turns },
         }],
       };
     }
