@@ -649,8 +649,14 @@ export function translateObject(
       return {
         kind: 'translated',
         calls: [{
+          // GOTCHA (2026-09-25, A1 mirror E_OP_FAILED): `cad.mirror(input,
+          // options)` takes the SOURCE SHAPE as a POSITIONAL arg. Do NOT set
+          // `noPositionalArgs` here — that flag is only for ops with zero
+          // positional inputs (e.g. cad.compound({ members })), and setting it
+          // made renderArgs drop `inputs[0]`, emitting
+          // `cad.mirror({ normal, at })` with no geometry → E_OP_FAILED at run.
           out, op: 'cad.mirror', source: obj.name, inputs: [s],
-          noPositionalArgs: true, params: { normal, at },
+          params: { normal, at },
         }],
       };
     }
@@ -1093,8 +1099,13 @@ export function translateObject(
       return {
         kind: 'translated',
         calls: [{
+          // GOTCHA (2026-09-25, A3 revolve REVOLVE_FAILED): same root cause as
+          // the mirror branch — `cad.revolve(input, { axis, at, angle })` takes
+          // the source shape as a POSITIONAL arg. `noPositionalArgs: true` made
+          // renderArgs drop `inputs[0]`, emitting `cad.revolve({ axis, at, angle })`
+          // with no geometry → REVOLVE_FAILED at run.
           out, op: 'cad.revolve', source: obj.name, inputs: [revVar],
-          noPositionalArgs: true, params: { axis, at, angle: revAngle },
+          params: { axis, at, angle: revAngle },
         }],
       };
     }

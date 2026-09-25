@@ -636,4 +636,53 @@ describe('M5 codegen', () => {
     expect(r.calls.filter((c) => c.op === 'cad.import_brep').length).toBe(1);
     expect(r.calls.filter((c) => c.op === 'cad.place'), 'asset already carries its placement').toEqual([]);
   });
+
+  // GOTCHA (2026-09-25, A1 mirror E_OP_FAILED / A3 revolve REVOLVE_FAILED):
+  // `cad.mirror(input, options)` and `cad.revolve(input, options)` take the
+  // SOURCE SHAPE as a POSITIONAL argument. The translate branch must NOT set
+  // `noPositionalArgs` — that flag is only valid for zero-positional-input ops
+  // (e.g. cad.compound({ members })). Setting it made renderArgs drop
+  // inputs[0], emitting `cad.mirror({ normal, at })` with no geometry →
+  // E_OP_FAILED / REVOLVE_FAILED at run time. The source must stay positional.
+  it('Part::Mirroring lowers to cad.mirror(<input>, { normal, at }) with the source as a positional arg', () => {
+    const doc: FcstdDocument = {
+      objects: [
+        simpleObj('Part::Box', 'Box', {}),
+        simpleObj('Part::Mirroring', 'Mir', {
+          Source: { value: 'Box' },
+          Base: { valueX: '0', valueY: '0', valueZ: '0' },
+          Normal: { valueX: '1', valueY: '0', valueZ: '0' },
+        }),
+      ],
+      typeIndex: new Map(),
+      meta: new Map(),
+    };
+    const r = generateModel(doc, new Map(), NO_CONTOURS, 't');
+    const call = r.calls.find((c) => c.op === 'cad.mirror');
+    expect(call, 'mirror must translate').toBeDefined();
+    expect(call!.inputs[0], 'source shape must be a positional input').toBe('part0');
+    expect(call!.noPositionalArgs, 'GOTCHA: source must NOT be suppressed by noPositionalArgs').toBeFalsy();
+    expect(r.code).toContain('cad.mirror(part0, {');
+  });
+
+  it('Part::Revolution lowers to cad.revolve(<input>, { axis, at, angle }) with the source as a positional arg', () => {
+    const doc: FcstdDocument = {
+      objects: [
+        simpleObj('Part::Box', 'Box', {}),
+        simpleObj('Part::Revolution', 'Rev', {
+          Source: { value: 'Box' },
+          Axis: { valueX: '0', valueY: '0', valueZ: '1' },
+          Angle: { value: '360' },
+        }),
+      ],
+      typeIndex: new Map(),
+      meta: new Map(),
+    };
+    const r = generateModel(doc, new Map(), NO_CONTOURS, 't');
+    const call = r.calls.find((c) => c.op === 'cad.revolve');
+    expect(call, 'revolve must translate').toBeDefined();
+    expect(call!.inputs[0], 'source shape must be a positional input').toBe('part0');
+    expect(call!.noPositionalArgs, 'GOTCHA: source must NOT be suppressed by noPositionalArgs').toBeFalsy();
+    expect(r.code).toContain('cad.revolve(part0, {');
+  });
 });
