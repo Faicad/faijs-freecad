@@ -66,6 +66,11 @@ export function parseGeometryList(prop: FcstdProperty): SketchGeom[] {
     if (!inner) continue;
     const a = inner.attributes;
     const tag = inner.tagName;
+    // GOTCHA (2026-09-26): the `<Construction value="1"/>` sibling used to be
+    // skipped for the geometry pick and then discarded entirely, so reference
+    // geometry was indistinguishable from profile geometry downstream.
+    const construction = child.children.find((c) => c.tagName === 'Construction')
+      ?.attributes['value'] === '1';
     switch (true) {
       case tag === 'LineSegment' || gtype.includes('GeomLineSegment'): {
         geoms.push({
@@ -73,6 +78,7 @@ export function parseGeometryList(prop: FcstdProperty): SketchGeom[] {
           index,
           x1: num(a, 'StartX'), y1: num(a, 'StartY'), z1: num(a, 'StartZ'),
           x2: num(a, 'EndX'), y2: num(a, 'EndY'), z2: num(a, 'EndZ'),
+          construction,
         });
         break;
       }
@@ -82,6 +88,7 @@ export function parseGeometryList(prop: FcstdProperty): SketchGeom[] {
           index,
           cx: num(a, 'CenterX'), cy: num(a, 'CenterY'), cz: num(a, 'CenterZ'),
           radius: num(a, 'Radius'),
+          construction,
         });
         break;
       }
@@ -97,11 +104,12 @@ export function parseGeometryList(prop: FcstdProperty): SketchGeom[] {
           index, cx, cy, cz, radius: r, startAngle: sa, endAngle: ea,
           x1: cx + r * Math.cos(sa), y1: cy + r * Math.sin(sa), z1: cz,
           x2: cx + r * Math.cos(ea), y2: cy + r * Math.sin(ea), z2: cz,
+          construction,
         });
         break;
       }
       case tag === 'GeomPoint' || tag === 'Point' || gtype.includes('GeomPoint'): {
-        geoms.push({ kind: 'point', index, x: num(a, 'X'), y: num(a, 'Y'), z: num(a, 'Z') });
+        geoms.push({ kind: 'point', index, x: num(a, 'X'), y: num(a, 'Y'), z: num(a, 'Z'), construction });
         break;
       }
       case tag === 'Ellipse' || gtype.includes('GeomEllipse'): {
@@ -118,6 +126,7 @@ export function parseGeometryList(prop: FcstdProperty): SketchGeom[] {
           majorRadius: major, minorRadius: minor, angleXU: ang,
           fx1: cx + f * ca, fy1: cy + f * sa2,
           fx2: cx - f * ca, fy2: cy - f * sa2,
+          construction,
         });
         break;
       }
@@ -152,6 +161,7 @@ export function parseGeometryList(prop: FcstdProperty): SketchGeom[] {
           x2: last ? last.x : NaN,
           y2: last ? last.y : NaN,
           z2: 0,
+          construction,
         });
         break;
       }
