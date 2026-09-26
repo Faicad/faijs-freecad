@@ -4,15 +4,15 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { parseSketchObject } from './sketch-parse.js';
-import { createPlanegcsSolver } from './planegcs-backend.js';
-import type { SketchSolver } from './sketch-solver.js';
+import { createNodePlanegcsSolver } from '@faicad/faijs-sketch/node';
+import type { SketchSolver } from '@faicad/faijs-sketch';
 import { isOk } from '@faicad/faijs/api/result';
-import { maxPointDistance, classifySketch } from './sketch-verify.js';
+import { maxPointDistance, classifySketch } from '@faicad/faijs-sketch';
 import type { FcstdProperty } from './document.js';
 
 let solver: SketchSolver;
 beforeAll(async () => {
-  solver = await createPlanegcsSolver();
+  solver = await createNodePlanegcsSolver();
 });
 
 function geomProp(children: string): FcstdProperty {

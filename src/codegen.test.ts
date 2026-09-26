@@ -1,11 +1,11 @@
 /**
  * M5 tests — dependency ordering (M5.1), code lowering (M5.2), statement
- * ids sN / variables partN, multi-root grouping, and M6 sketch→cad.sketch
+ * ids sN / variables partN, multi-root grouping, and M6 sketch→cad.profile
  * wiring (Pad/Pocket become real cad.extrude / cad.subtract calls).
  */
 import { describe, it, expect } from 'vitest';
 import { generateModel } from './codegen.js';
-import type { Contour } from './contour.js';
+import type { Contour } from '@faicad/faijs-sketch';
 import type { FcstdDocument, FcstdObject, FcstdProperty } from './document.js';
 
 function simpleObj(type: string, name: string, props: Record<string, Record<string, string>> = {}): FcstdObject {
@@ -103,7 +103,7 @@ describe('M5 codegen', () => {
     expect(origin).toMatchObject({ disposition: 'preserved-only' });
   });
 
-  it('bakes sketches without verdicts/contours; wires them to cad.sketch when solved', () => {
+  it('bakes sketches without verdicts/contours; wires them to cad.profile when solved', () => {
     const doc: FcstdDocument = {
       objects: [
         simpleObj('Sketcher::SketchObject', 'Sketch', {}),
@@ -117,7 +117,7 @@ describe('M5 codegen', () => {
     const pad1 = r1.objects.find((o) => o.name === 'Pad');
     expect(pad1).toMatchObject({ disposition: 'baked' });
 
-    // L0 verdict + contours → sketch emits cad.sketch, Pad resolves the
+    // L0 verdict + contours → sketch emits cad.profile, Pad resolves the
     // profile face and becomes a real cad.extrude call (M6 wiring).
     const r2 = generateModel(
       doc,
@@ -129,7 +129,7 @@ describe('M5 codegen', () => {
     expect(sketch2).toMatchObject({ disposition: 'translated' });
     const pad2 = r2.objects.find((o) => o.name === 'Pad');
     expect(pad2).toMatchObject({ disposition: 'translated' });
-    expect(r2.code).toContain('cad.sketch');
+    expect(r2.code).toContain('cad.profile');
     expect(r2.code).toContain('cad.extrude');
     // 分层红线：FCStd 链路一律落 cad.extrude（up-to 亦在平台 op 上）。历史上
     // 曾把 up-to 落到已废弃的 cad.fai_extrude 路线（M4.6 明确废弃），这条断言
@@ -201,7 +201,7 @@ describe('M5 codegen', () => {
     expect(pad).toMatchObject({ disposition: 'translated' });
     expect(pocket).toMatchObject({ disposition: 'translated' });
     // both sketches become faces; Pad extrudes, Pocket extrudes+cuts
-    expect(r.code).toContain('cad.sketch');
+    expect(r.code).toContain('cad.profile');
     expect(r.code).toContain('cad.extrude');
     expect(r.code).toContain('cad.subtract');
     expect(r.code).not.toContain('cad.fai_extrude');
@@ -236,7 +236,7 @@ describe('M5 codegen', () => {
     expect(r.code).toContain('cad.compound({ members: [part0, part1] })');
   });
 
-  // GOTCHA: renderArgs used to emit `cad.sketch(, { ... })` for calls with no
+  // GOTCHA: renderArgs used to emit `cad.profile(, { ... })` for calls with no
   // positional args (inputs+literals empty) — a leading comma → SyntaxError.
   // Correct form: named-only params render as the first argument, no comma.
   it('emits no leading comma for calls with only named params (M7.1b)', () => {
@@ -251,7 +251,7 @@ describe('M5 codegen', () => {
       new Map([['Sketch', square()]]),
       't',
     );
-    expect(r.code).toContain('cad.sketch({ contours:');
+    expect(r.code).toContain('cad.profile({ contours:');
     expect(r.code).not.toContain('(, ');
   });
 

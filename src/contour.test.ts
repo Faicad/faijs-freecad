@@ -3,9 +3,9 @@
  * three-level downgrade ledger entry (D3).
  */
 import { describe, it, expect } from 'vitest';
-import { extractContours } from './contour.js';
-import { classifySketch } from './sketch-verify.js';
-import type { SketchGeom } from './sketch-parse.js';
+import { extractContours } from '@faicad/faijs-sketch';
+import { classifySketch } from '@faicad/faijs-sketch';
+import type { FcstdSketchGeom as SketchGeom } from '@faicad/faijs-sketch';
 
 describe('contour extraction (M3.6)', () => {
   it('chains a rectangle from 4 line segments into one closed contour', () => {

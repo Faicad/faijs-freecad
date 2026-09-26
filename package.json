@@ -41,7 +41,7 @@
     "LICENSE"
   ],
   "dependencies": {
-    "@salusoft89/planegcs": "1.2.0",
+    "@faicad/faijs-sketch": "^0.17.0",
     "@xmldom/xmldom": "^0.9.8",
     "fflate": "^0.8.2"
   },

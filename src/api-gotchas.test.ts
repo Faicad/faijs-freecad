@@ -8,13 +8,13 @@
  * .agents/notes/2026-09-16-fcstd-port-m0-m5.md).
  */
 import { describe, it, expect, beforeAll } from 'vitest';
-import { createPlanegcsSolver } from './planegcs-backend.js';
-import type { SketchSolver } from './sketch-solver.js';
+import { createNodePlanegcsSolver } from '@faicad/faijs-sketch/node';
+import type { SketchSolver } from '@faicad/faijs-sketch';
 import { zipSync, strToU8, unzipSync } from 'fflate';
 
 let solver: SketchSolver;
 beforeAll(async () => {
-  solver = await createPlanegcsSolver();
+  solver = await createNodePlanegcsSolver();
 });
 
 describe('planegcs API traps (M3.4)', () => {

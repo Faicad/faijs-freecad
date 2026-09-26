@@ -8,10 +8,10 @@
  * 75 features across the Mannequin file (13 Revolution + 26 Groove + ...).
  */
 import { describe, expect, it } from 'vitest';
-import { evalBSpline, sampleBSpline, bsplineToSegments, type BSplineCurveData } from './bspline.js';
+import { evalBSpline, sampleBSpline, bsplineToSegments, type BSplineCurveData } from '@faicad/faijs-sketch';
 import { parseGeometryList } from './sketch-parse.js';
-import { extractContours } from './contour.js';
-import { anchorPoints } from './sketch-verify.js';
+import { extractContours } from '@faicad/faijs-sketch';
+import { anchorPoints } from '@faicad/faijs-sketch';
 import type { FcstdProperty } from './document.js';
 
 // ── helpers ──

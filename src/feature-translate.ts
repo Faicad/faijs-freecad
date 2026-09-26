@@ -4,7 +4,7 @@
  * M4.1 whitelist: anything not listed → baked (S3, no silent loss).
  * M4.2 primitives → cad.box/cylinder/cone/sphere
  * M4.3 booleans   → cad.union/subtract/intersect
- * M4.6 Pad/Pocket → cad.extrude/cad.subtract over the M3 sketch contour (M6: sketch is a cad.sketch face)
+ * M4.6 Pad/Pocket → cad.extrude/cad.subtract over the M3 sketch contour (M6: sketch is a cad.profile face)
  *
  * The call plan is an intermediate representation: M5 lowers it to .fai.js
  * (statements sN, variables partN). Geometry values are already mm (D7).

@@ -18,11 +18,11 @@ import { unpackFcstd, memberText } from './unpack.js';
 import { parseFilletEdges, type FilletEdgeEntry } from './fillet-edges.js';
 import { parseDocumentXml } from './document.js';
 import { parseSketchObject } from './sketch-parse.js';
-import { createPlanegcsSolver } from './planegcs-backend.js';
-import { classifySketch } from './sketch-verify.js';
+import { createNodePlanegcsSolver } from '@faicad/faijs-sketch/node';
+import { classifySketch } from '@faicad/faijs-sketch';
 import { resolveExternalGeometry } from './external-geo.js';
-import { extractContours } from './contour.js';
-import type { Contour } from './contour.js';
+import { extractContours } from '@faicad/faijs-sketch';
+import type { Contour } from '@faicad/faijs-sketch';
 import { generateModel } from './codegen.js';
 import type { Placement } from './placement.js';
 import { effectivePlacement } from './attachment.js';
@@ -142,7 +142,7 @@ export async function convertFcstdFile(input: string, opts?: ConvertOptions): Pr
   if (!isOk(doc)) return fail(`parse failed: ${doc.error.message}`);
 
   // M3: solve every sketch (same pipeline as the dev script)
-  const solver = await createPlanegcsSolver();
+  const solver = await createNodePlanegcsSolver();
   const sketchVerdict = new Map<string, { level: 'L0' | 'L1' | 'L2'; reason?: string; loopCount?: number }>();
   const sketchContours = new Map<string, Contour[]>();
   for (const obj of doc.value.objects) {
@@ -336,9 +336,10 @@ export async function convertFcstdFile(input: string, opts?: ConvertOptions): Pr
 
 // Public conversion surface re-exports (former top-level `fcstd-convert` barrel).
 // The batch project's tooling consumes these without reaching into `src/`.
-export { createPlanegcsSolver, planegcsWasmPath } from './planegcs-backend.js';
-export { classifySketch, maxPointDistance } from './sketch-verify.js';
-export type { SketchVerdict } from './sketch-verify.js';
+export { createNodePlanegcsSolver as createPlanegcsSolver, planegcsWasmPath } from '@faicad/faijs-sketch/node';
+export { classifySketch, maxPointDistance } from '@faicad/faijs-sketch';
+export type { SketchVerdict } from '@faicad/faijs-sketch';
+
 export { resolveExternalGeometry } from './external-geo.js';
 export type { ExternalGeoResult, ExternalLink } from './external-geo.js';
 export { isWhitelisted } from './feature-translate.js';

@@ -1,171 +1,41 @@
 /**
- * M3.1 — FCStd sketch parsing: <GeometryList> → SketchGeom[],
+ * M3.1 — FCStd sketch XML parsing: <GeometryList> → SketchGeom[],
  * <ConstraintList> → SketchCon[].
+ *
+ * The sketch model types and the solve pipeline now live in
+ * `@faicad/faijs-sketch`; this module keeps the FCStd-specific XML parsing and
+ * re-exports the types under their historical names so existing consumers of
+ * the read layer keep compiling.
  *
  * Field format per plan §5.2/§5.3:
  * - geometry coordinates are 3D (X/Y/Z); sketch-local Z is usually 0
  * - <Constrain> (singular) carries Type as the ConstraintType enum integer
- *   (Constraint.h:52-77)
  * - ElementIds/ElementPositions (new) take precedence over First/Second/Third
  *   (old); 47.5% of sample constraints lack the new format (§5.3.1)
- * - IsDriving defaults to true when missing (Constraint.h:240)
- * - geoId: >= 0 own geometry; -1 HAxis/RtPnt; -2 VAxis; <= -3 external (D4)
+ * - IsDriving defaults to true when missing
+ * - geoId: >= 0 own geometry; -1 HAxis/RtPnt; -2 VAxis; <= -3 external
  */
 import type { FcstdProperty } from './document.js';
+import {
+  ConstraintType,
+  CONSTRAINT_NAMES,
+  GeoId,
+  PointPos,
+} from '@faicad/faijs-sketch';
+import type {
+  FcstdSketchGeom as SketchGeom,
+  FcstdGeoRef as GeoRef,
+  FcstdSketchCon as SketchCon,
+  FcstdParsedSketch as ParsedSketch,
+} from '@faicad/faijs-sketch';
 
-/** ConstraintType enum values (src/Mod/Sketcher/App/Constraint.h:52-77) */
-export const ConstraintType = {
-  Coincident: 1,
-  Horizontal: 2,
-  Vertical: 3,
-  Parallel: 4,
-  Tangent: 5,
-  Distance: 6,
-  DistanceX: 7,
-  DistanceY: 8,
-  Angle: 9,
-  Perpendicular: 10,
-  Radius: 11,
-  Equal: 12,
-  PointOnObject: 13,
-  Symmetric: 14,
-  InternalAlignment: 15,
-  SnellsLaw: 16,
-  Block: 17,
-  Diameter: 18,
-  Weight: 19,
-  Group: 20,
-  Text: 21,
-} as const;
-
-/**
- * Human-readable names for the ConstraintType enum integers (debugging/
- * diagnostics only).
- */
-export const CONSTRAINT_NAMES: Record<number, string> = {
-  1: 'Coincident', 2: 'Horizontal', 3: 'Vertical', 4: 'Parallel', 5: 'Tangent',
-  6: 'Distance', 7: 'DistanceX', 8: 'DistanceY', 9: 'Angle', 10: 'Perpendicular',
-  11: 'Radius', 12: 'Equal', 13: 'PointOnObject', 14: 'Symmetric',
-  15: 'InternalAlignment', 16: 'SnellsLaw', 17: 'Block', 18: 'Diameter',
-  19: 'Weight', 20: 'Group', 21: 'Text',
-};
-
-/** GeoEnum (src/Mod/Sketcher/App/GeoEnum.h:71-78) */
-export const GeoId = {
-  RtPnt: -1,
-  HAxis: -1,
-  VAxis: -2,
-  RefExt: -3,
-} as const;
-
-/** PointPos (GeoEnum.h:88-94) */
-export const PointPos = {
-  none: 0, // edge itself
-  start: 1,
-  end: 2,
-  mid: 3, // center of circle/ellipse
-} as const;
-
-/**
- * One parsed sketch geometry element (point, line, circle, arc or ellipse),
- * in 3D sketch-local coordinates.
- */
-export type SketchGeom =
-  | { kind: 'point'; index: number; x: number; y: number; z: number }
-  | { kind: 'line'; index: number; x1: number; y1: number; z1: number; x2: number; y2: number; z2: number }
-  | { kind: 'circle'; index: number; cx: number; cy: number; cz: number; radius: number }
-  | {
-      kind: 'arc';
-      index: number;
-      cx: number;
-      cy: number;
-      cz: number;
-      radius: number;
-      startAngle: number; // radians
-      endAngle: number;
-      /** arc endpoints derived from angles (kept for solver wiring) */
-      x1: number;
-      y1: number;
-      z1: number;
-      x2: number;
-      y2: number;
-      z2: number;
-    }
-  | {
-      kind: 'ellipse';
-      index: number;
-      cx: number;
-      cy: number;
-      cz: number;
-      majorRadius: number;
-      minorRadius: number;
-      /** rotation of major axis, radians */
-      angleXU: number;
-      /** first focus (computed) */
-      fx1: number;
-      fy1: number;
-      fx2: number;
-      fy2: number;
-    }
-  | {
-      /** P4: Part::GeomBSplineCurve (Poles/Knots/Degree/IsPeriodic) */
-      kind: 'bspline';
-      index: number;
-      poles: { x: number; y: number }[];
-      knots: number[];
-      degree: number;
-      periodic: boolean;
-      /** curve start/end (exact for clamped splines; solver wiring + chaining) */
-      x1: number;
-      y1: number;
-      z1: number;
-      x2: number;
-      y2: number;
-      z2: number;
-    };
-
-/**
- * One (geometry, point) reference inside a constraint: a geoId plus a
- * PointPos selector.
- */
-export interface GeoRef {
-  /** geometry id: >= 0 own geometry; -1 HAxis/RtPnt; -2 VAxis; <= -3 external */
-  geoId: number;
-  /** PointPos selector (0 = edge itself, 1/2 = start/end, 3 = center) */
-  pos: number; // PointPos
-}
-
-/**
- * One parsed sketch constraint (`<Constrain>` element).
- */
-export interface SketchCon {
-  /** index in the ConstraintList */
-  index: number;
-  /** ConstraintType integer */
-  type: number;
-  /** resolved element refs (ElementIds or First/Second/Third fallback) */
-  refs: GeoRef[];
-  /** driving dimension value (Distance/Angle/Radius/...) */
-  value: number;
-  /** IsDriving; missing means true (§5.3.1) */
-  isDriving: boolean;
-  /** raw name attribute */
-  name: string;
-  /** InternalAlignmentType when type === 15 */
-  internalAlignmentType?: number;
-}
-
-/**
- * The fully parsed sketch: geometry, constraints, constrainedness and the set
- * of referenced external geoIds.
- */
-export interface ParsedSketch {
-  geoms: SketchGeom[];
-  constraints: SketchCon[];
-  fullyConstrained: boolean;
-  /** geoIds <= -3 referenced by constraints (D4 external geometry) */
-  externalGeoIds: number[];
-}
+export { ConstraintType, CONSTRAINT_NAMES, GeoId, PointPos };
+export type {
+  FcstdSketchGeom as SketchGeom,
+  FcstdGeoRef as GeoRef,
+  FcstdSketchCon as SketchCon,
+  FcstdParsedSketch as ParsedSketch,
+} from '@faicad/faijs-sketch';
 
 function num(attrs: Record<string, string>, key: string): number {
   const v = attrs[key];

@@ -16,7 +16,7 @@ import type { FcstdDocument } from './document.js';
 import type { CadCall, TranslateVerdict } from './feature-translate.js';
 import { translateObject, isJsExpr, jsExpr, BODY_CHAIN_BASE } from './feature-translate.js';
 import type { FilletEdgeEntry } from './fillet-edges.js';
-import type { Contour } from './contour.js';
+import type { Contour } from '@faicad/faijs-sketch';
 import { type Placement, isIdentityPlacement, invertApplyPlacement } from './placement.js';
 import { isNonModelingType } from './structural-types.js';
 
@@ -227,13 +227,13 @@ export function generateModel(
         !!contours &&
         contours.length > 0;
       if (usable) {
-        // M6 wiring: emit a real `cad.sketch({contours})` creator so the
+        // M6 wiring: emit a real `cad.profile({contours})` creator so the
         // solved contour becomes a face variable the Pad/Pocket/Extrusion/
         // Revolution features below can consume.
         const v = newVar();
         variables.set(name, v);
         const sketchCall: CadCall = {
-          out: v, op: 'cad.sketch', source: name, inputs: [], params: { contours },
+          out: v, op: 'cad.profile', source: name, inputs: [], params: { contours },
         };
         calls.push(sketchCall);
         results.push({
@@ -304,7 +304,7 @@ export function generateModel(
         call.out = v;
         calls.push(call);
       }
-      // M8.3: features build in sketch-local coordinates (cad.sketch lays the
+      // M8.3: features build in sketch-local coordinates (cad.profile lays the
       // face on local XY; extrude runs along local +Z). Re-orient the final
       // solid by the PROFILE SKETCH's Placement: rotate_euler then translate,
       // so the result lands where FreeCAD puts it. Identity placements emit
@@ -657,7 +657,7 @@ function renderArgs(call: CadCall): string {
   }
   const namedBlock = named.length ? `{ ${named.join(', ')} }` : '';
   // M7.1: no leading comma when there are no positional args — a call with only
-  // named params must render as `cad.sketch({ ... })`, never `cad.sketch(, {...})`.
+  // named params must render as `cad.profile({ ... })`, never `cad.profile(, {...})`.
   const rest = namedBlock ? (positional.length ? `, ${namedBlock}` : namedBlock) : '';
   return `${positional.join(', ')}${rest}`;
 }

@@ -1,5 +1,5 @@
 /**
- * cad.sketch — BREP planar-face construction from 2D contours.
+ * cad.profile — BREP planar-face construction from 2D contours.
  *
  * Verifies the M6 wiring primitive: a solved sketch contour (lines + arcs)
  * becomes a real planar face that Pad/Pocket/Extrusion/Revolution consume via
@@ -14,7 +14,7 @@ import type { HostPorts } from '@faicad/faijs/cad-runtime/ports'
 import { asPartName } from '@faicad/faijs/identity'
 import { initOcctWasm } from '@faicad/faijs/occt-kernel/occtKernel'
 import type { Shape } from '@faicad/faijs/mesh/types'
-import type { Contour } from './contour.js'
+import type { Contour } from '@faicad/faijs-sketch'
 import { createApiNamespace } from '@faicad/faijs/api/api-namespace'
 
 beforeAll(async () => {
@@ -25,9 +25,9 @@ function defaultPorts(): HostPorts {
   return { events: { emit: () => {} } } as HostPorts
 }
 
-/** Execute `cad.sketch({contours})` in BREP mode and return the resulting face Shape. */
+/** Execute `cad.profile({contours})` in BREP mode and return the resulting face Shape. */
 async function runSketch(contours: Contour[]): Promise<Shape> {
-  return runCode(`let part0 = cad.sketch({ contours: ${JSON.stringify(contours)} })\n`, 'part0')
+  return runCode(`let part0 = cad.profile({ contours: ${JSON.stringify(contours)} })\n`, 'part0')
 }
 
 /** Execute arbitrary .fai.js code in BREP mode and return the named output Shape. */
@@ -116,7 +116,7 @@ function circleAt(cx: number, cy: number, r: number): Contour {
   }
 }
 
-describe('cad.sketch — BREP planar face construction', () => {
+describe('cad.profile — BREP planar face construction', () => {
   it('builds a planar face from a square (area ≈ 100)', async () => {
     const s = await runSketch([square()])
     expect(Math.abs(faceAreaXY(s) - 100)).toBeLessThan(1.0)
@@ -140,14 +140,14 @@ describe('cad.sketch — BREP planar face construction', () => {
     expect(Math.abs(faceAreaXY(s) - expected)).toBeLessThan(1.0)
   })
 
-  it('throws on empty contours (E_SKETCH_NO_CONTOURS)', async () => {
-    await expect(runSketch([])).rejects.toThrow(/E_SKETCH_NO_CONTOURS/)
+  it('throws on empty contours (E_PROFILE_NO_CONTOURS)', async () => {
+    await expect(runSketch([])).rejects.toThrow(/E_PROFILE_NO_CONTOURS/)
   })
 
   it('sketch → extrude produces a prism (volume ≈ area × length)', async () => {
     // square face (area 100) extruded 10 along +Z → prism volume 1000
     const code =
-      `let part0 = cad.sketch({ contours: ${JSON.stringify([square()])} })\n` +
+      `let part0 = cad.profile({ contours: ${JSON.stringify([square()])} })\n` +
       `let part1 = cad.extrude(part0, [0, 0, 10])\n`
     const prism = await runCode(code, 'part1')
     expect(Math.abs(volume(prism) - 1000)).toBeLessThan(2)
