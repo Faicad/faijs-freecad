@@ -131,6 +131,7 @@ function bodyFeatureNames(obj: FcstdDocument['objects'][number]): string[] {
  * @param shapeCarriers objects whose Shape is a ZIP .brp member (pure-Shape carriers → shape-asset)
  * @param brokenShapeAssets objects whose Shape `file` attribute points at a missing/empty member (explicit gap)
  * @param filletEdgesData parsed PropertyFilletEdges binaries keyed by object name (Part::Chamfer/Fillet)
+ * @param prePlacedAssets pre-placed .brp assets (embedded Locations ≠ identity) that must not be re-placed
  * @returns the lowered call plan, per-object dispositions and generated code
  */
 export function generateModel(

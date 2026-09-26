@@ -184,6 +184,7 @@ function docReferenceValue(
  * @param expr 待求值表达式原文。
  * @param docObjects 文档对象表，用于解析引用（`<<L>>.A` / `L.A`）。
  * @param self 调用方对象（Spreadsheet::Sheet 时启用同表地址 `B2` 解析）。可选。
+ * @param seen 递归环保护集合（累计已访问的对象引用；默认 new Set()）。
  * @returns 求值结果数值；含残留标识符 / 无法解析引用时返回 undefined。
  */
 /**
@@ -191,6 +192,7 @@ function docReferenceValue(
  * @param expr - the expression text (without the leading `=`).
  * @param docObjects - the document objects visible to the expression.
  * @param self - the object the expression is evaluated on, if any.
+ * @param seen - recursion-cycle guard set accumulating visited object refs (default new Set()).
  * @returns the evaluated expression value.
  */
 export function evalWithDoc(
