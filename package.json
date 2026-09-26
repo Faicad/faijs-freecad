@@ -46,7 +46,7 @@
     "fflate": "^0.8.2"
   },
   "peerDependencies": {
-    "@faicad/faijs": "^0.17.0",
+    "@faicad/faijs": "^0.18.0",
     "occt-wasm": "^3.8.4"
   },
   "devDependencies": {
