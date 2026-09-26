@@ -609,16 +609,18 @@ describe('M5 codegen', () => {
     expect(r.objects.find((o) => o.name === 'Body')!.disposition).toBe('preserved-only');
   });
 
-  // GOTCHA (H13, TO92, 2026-09-23): a shape-asset object's frozen `.brp`
-  // member is saved by FreeCAD WITH its Placement already applied — the
-  // re-emitted `cad.place` applied the SAME transform twice (volume/solids
-  // unchanged, only bbox/com parity exposed it). The import must NEVER be
-  // placed again, even when the object carries a non-identity Placement.
-  it('shape-asset object with non-identity Placement emits no cad.place (H13 double-placement)', () => {
+  // GOTCHA (H13 REVISED, Beds.FCStd 2026-09-26): the old rule skipped
+  // `cad.place` for shape-asset objects (TO92 looked pre-placed). Beds'
+  // root Sections save the .brp in the LOCAL frame — skipping place left
+  // them at the origin (solids 10vs6, bbox z 2850 vs 450). The truth tool
+  // applies the Placement exactly once for every object, so codegen must
+  // ALWAYS re-emit `cad.place` for a non-identity Placement, shape asset
+  // or not. Pinned here against regression.
+  it('shape-asset object with non-identity Placement emits cad.place (H13 revised, Beds)', () => {
     const doc: FcstdDocument = {
       objects: [
         // pure-Shape carrier imported via cad.import_brep, carrying a placed
-        // Placement (like TO92's Cut001: z offset + rotation)
+        // Placement (like Beds' root Sections: translation-only offset)
         simpleObj('Part::Feature', 'Cut001', { Shape: { file: 'Cut001.Shape.brp' } }),
       ],
       typeIndex: new Map(),
@@ -629,12 +631,14 @@ describe('M5 codegen', () => {
       new Map(),
       NO_CONTOURS,
       't',
-      // non-identity placement on the object — the trap that used to double-apply
+      // non-identity placement on the object — must surface as cad.place
       new Map([['Cut001', { p: [0, 0, 2.8] as [number, number, number], q: [0, 0, 0.7071067811865476, 0.7071067811865476] as [number, number, number, number] }]]),
       new Set(['Cut001']),
     );
     expect(r.calls.filter((c) => c.op === 'cad.import_brep').length).toBe(1);
-    expect(r.calls.filter((c) => c.op === 'cad.place'), 'asset already carries its placement').toEqual([]);
+    const places = r.calls.filter((c) => c.op === 'cad.place');
+    expect(places.length, 'non-identity Placement must emit exactly one cad.place').toBe(1);
+    expect(places[0]!.params.position).toEqual([0, 0, 2.8]);
   });
 
   // GOTCHA (2026-09-25, A1 mirror E_OP_FAILED / A3 revolve REVOLVE_FAILED):
@@ -710,7 +714,7 @@ describe('M5 codegen', () => {
     ]);
     const contours = new Map([['Sketch262', square()], ['Sketch263', square()]]);
     const r = generateModel(doc, verdicts, contours, 't');
-    expect(r.calls.map((c) => c.op)).toEqual(['cad.sketch', 'cad.sketch', 'cad.loft']);
+    expect(r.calls.map((c) => c.op)).toEqual(['cad.profile', 'cad.profile', 'cad.loft']);
     const loft = r.calls[2]!;
     expect(loft.source).toBe('Loft002');
     expect(r.objects.find((o) => o.name === 'Loft002')!.disposition).toBe('translated');

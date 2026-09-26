@@ -14,7 +14,7 @@
  * written (final check `auditMapping`).
  */
 import { readFileSync } from 'node:fs';
-import { unpackFcstd, memberText } from './unpack.js';
+import { unpackFcstd, memberText, brpEmbeddedLocation } from './unpack.js';
 import { parseFilletEdges, type FilletEdgeEntry } from './fillet-edges.js';
 import { parseDocumentXml } from './document.js';
 import { parseSketchObject } from './sketch-parse.js';
@@ -252,9 +252,31 @@ export async function convertFcstdFile(input: string, opts?: ConvertOptions): Pr
 
   let gen;
   try {
+    // Pre-placed assets: skip cad.place ONLY when the .brp's embedded location
+    // EQUALS the Document Placement (Section: embedded z=1500 == doc (0,0,1500)
+    // → already placed once). When they differ (Section002: embedded
+    // (1500,0,600) vs doc (0,600,1500)) the two compose — the place must still
+    // be emitted, targeting the residual (doc − embedded) transform.
+    const prePlacedAssets = new Set<string>();
+    for (const obj of doc.value.objects) {
+      if (!shapeCarriers.has(obj.name)) continue;
+      const shapeFile = obj.properties.get('Shape')?.children[0]?.attributes['file']
+        ?? obj.properties.get('SubShape')?.children[0]?.attributes['file'];
+      if (!shapeFile) continue;
+      const member = unpacked.value.members.get(shapeFile);
+      if (!member) continue;
+      const embedded = brpEmbeddedLocation(member);
+      if (!embedded) continue; // identity/absent → normal place path
+      const pl = placements?.get(obj.name);
+      if (pl && Math.abs(pl.p[0]! - embedded[0]!) < 1e-6 &&
+          Math.abs(pl.p[1]! - embedded[1]!) < 1e-6 &&
+          Math.abs(pl.p[2]! - embedded[2]!) < 1e-6) {
+        prePlacedAssets.add(obj.name);
+      }
+    }
     gen = generateModel(
       doc.value, sketchVerdict, sketchContours, baseName, placements, shapeCarriers,
-      brokenShapeAssets, filletEdgesData,
+      brokenShapeAssets, filletEdgesData, prePlacedAssets,
     );
   } catch (e) {
     return fail(`codegen failed: ${(e as Error).message}`);

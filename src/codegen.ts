@@ -146,6 +146,11 @@ export function generateModel(
   brokenShapeAssets?: ReadonlySet<string>,
   /** P8: parsed PropertyFilletEdges binaries keyed by object name (Part::Chamfer/Fillet). */
   filletEdgesData?: ReadonlyMap<string, FilletEdgeEntry[]>,
+  /** Pre-placed .brp assets (embedded Locations ≠ identity): never re-place these —
+   *  double-applying the transform lands the shape 2× away (Beds Section → z=3000
+   *  vs truth 1500). Derived per-object by the caller from the .brp header
+   *  (`brpHasEmbeddedLocation`, unpack.ts). */
+  prePlacedAssets?: ReadonlySet<string>,
 ): GenResult {
   const byName = new Map(doc.objects.map((o) => [o.name, o]));
   // GOTCHA (test_geomop corpus, 2026-09-20): a dependency on a Body
@@ -349,14 +354,16 @@ export function generateModel(
       const lastVar = verdict.calls.at(-1)?.out;
       const sketchLink = obj.properties.get('Sketch')?.children[0]?.attributes['value'];
       const pl = (sketchLink ? placements?.get(sketchLink) : undefined) ?? placements?.get(name);
-      // GOTCHA (H13, TO92, 2026-09-23): a shape-asset object's frozen `.brp`
-      // member is saved by FreeCAD WITH its Placement already applied (the
-      // asset's bbox starts at the placed z). Re-emitting `cad.place` with the
-      // object's stored Placement applies the SAME transform twice — volume
-      // and solids stay correct, only a bbox/com parity check exposes it.
-      // The import already carries the placement; never place it again.
-      const isShapeAsset = verdict.reason === 'shape-asset';
-      if (lastVar && pl && !isIdentityPlacement(pl) && !isShapeAsset) {
+      // GOTCHA (H13 REVISED twice, 2026-09-26): shape-asset .brp members
+      // SOMETIMES embed the Placement in their Locations header (TO92,
+      // Beds Section) and sometimes don't (Beds Section002-005). The old
+      // unconditional rules were both wrong: always-place double-applies
+      // pre-placed assets (Section landed z=3000, truth 1500); never-place
+      // stranded local-frame assets at the origin (solids 10vs6, z 2850
+      // vs 450). The caller passes `prePlacedAssets` derived from the .brp
+      // header itself (brpHasEmbeddedLocation) — place only when NOT embedded.
+      const isPrePlaced = prePlacedAssets?.has(name) ?? false;
+      if (lastVar && pl && !isIdentityPlacement(pl) && !isPrePlaced) {
         // 单个刚性放置：旋转（四元数，绕局部原点）+ 平移 = FreeCAD Placement(P,Q)。
         // 直接发 cad.place，避免 euler 往返损失精度（方案 §4.7：两语句合一）。
         const cur = lastVar;
