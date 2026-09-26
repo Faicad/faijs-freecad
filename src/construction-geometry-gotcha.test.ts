@@ -25,6 +25,7 @@
  * at the time of the fix.
  */
 import { describe, it, expect } from 'vitest';
+// contour 提取随 sketch 拆包移至 @faicad/faijs-sketch（2026-09-26）
 import { extractContours } from '@faicad/faijs-sketch';
 import { parseSketchObject } from './sketch-parse.js';
 import type { FcstdProperty } from './document.js';
