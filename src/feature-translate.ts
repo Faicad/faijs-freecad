@@ -523,7 +523,18 @@ export function translateObject(
   // zero-bytes in the archive is a BROKEN asset, not a shape-asset — surface
   // it as an explicit convert-time gap instead of letting the object fall
   // through to python-opaque (which would silently swallow the defect).
-  if (brokenShapeAssets?.has(obj.name)) {
+  //
+  // GOTCHA (2026-09-26): the evidence must NOT preempt a type we can actually
+  // translate. `RND_455_00194.fcstd` stores a zero-byte `PartShape69.brp` for
+  // `LinearPattern` and zero-byte caches for 23 `PartDesign::Mirrored`
+  // features; FreeCAD routinely saves an empty shape cache for a feature whose
+  // geometry is folded into the Body. Preempting turned a perfectly
+  // translatable `PartDesign::PolarPattern`/`LinearPattern` (own branch below)
+  // into a gap for a fact that says nothing about translatability. The check
+  // therefore only applies to types that fall through to python-opaque /
+  // type-not-whitelisted — which is exactly the fall-through E4 was written
+  // for.
+  if (brokenShapeAssets?.has(obj.name) && !isWhitelisted(obj.type)) {
     return { kind: 'baked', reason: 'shape-asset-broken: frozen .brp member missing or empty' };
   }
   // H7 follow-up (Body-less CAM corpus, 2026-09-20): a SubShape property whose

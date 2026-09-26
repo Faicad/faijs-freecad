@@ -71,6 +71,30 @@ describe('M4.1 whitelist', () => {
   });
 });
 
+describe('E4 broken shape assets (GOTCHA 2026-09-26)', () => {
+  // `RND_455_00194.fcstd` stores a ZERO-BYTE `PartShape69.brp` for
+  // `LinearPattern` and empty caches for 23 `PartDesign::Mirrored` features.
+  // FreeCAD routinely saves an empty shape cache for a feature whose geometry
+  // is folded into the Body, so "empty cache" says nothing about whether the
+  // feature is translatable.
+  it('does not preempt translation of a whitelisted translatable type', () => {
+    const box = obj('Part::Box', 'Box', [
+      prop('Length', { name: 'Float', attrs: { value: '30' } }),
+      prop('Width', { name: 'Float', attrs: { value: '20' } }),
+      prop('Height', { name: 'Float', attrs: { value: '10' } }),
+    ]);
+    const v = translateObject(box, () => undefined, undefined, undefined, new Set(['Box']));
+    expect(v.kind).toBe('translated');
+  });
+
+  it('still reports the broken asset for a type that would fall through to python-opaque', () => {
+    const opaque = obj('Part::FeaturePython', 'Site', [prop('Proxy', { name: 'Python', attrs: {} })]);
+    const v = translateObject(opaque, () => undefined, undefined, undefined, new Set(['Site']));
+    expect(v.kind).toBe('baked');
+    if (v.kind === 'baked') expect(v.reason).toBe('shape-asset-broken: frozen .brp member missing or empty');
+  });
+});
+
 describe('M4.2 primitives', () => {
   it('translates Part::Box with placement corner', () => {
     const box = obj('Part::Box', 'Box', [
