@@ -14,7 +14,10 @@
  */
 import type { FcstdDocument } from './document.js';
 import type { CadCall, TranslateVerdict } from './feature-translate.js';
-import { translateObject, isJsExpr, jsExpr, BODY_CHAIN_BASE } from './feature-translate.js';
+import {
+  translateObject, isJsExpr, jsExpr, BODY_CHAIN_BASE,
+  LINK_INPUT_PROPS, LINK_LIST_INPUT_PROPS,
+} from './feature-translate.js';
 import type { FilletEdgeEntry } from './fillet-edges.js';
 import type { Contour } from '@faicad/faijs-sketch';
 import { type Placement, isIdentityPlacement, invertApplyPlacement } from './placement.js';
@@ -60,23 +63,27 @@ interface Node {
 /** Extract link dependencies relevant for ordering. */
 function depsOf(obj: FcstdDocument['objects'][number]): string[] {
   const out: string[] = [];
-  const linkProps = ['Base', 'Tool', 'Profile', 'BaseFeature', 'Originals'];
-  for (const p of linkProps) {
+  // Single-value links / link-subs. The list is owned by feature-translate.ts
+  // so it can never drift from what the translator actually reads — see
+  // LINK_INPUT_PROPS for the GOTCHA that motivated sharing it.
+  for (const p of LINK_INPUT_PROPS) {
     const el = obj.properties.get(p)?.children[0];
     const v = el?.attributes['value'];
     if (v) out.push(v);
   }
   // GOTCHA (ArchDetail corpus, 2026-09-21): App::PropertyLinkList properties.
   // `Shapes` is the multi-input geometry list (Part::MultiFuse / MultiCommon);
-  // `Links` is Part::Compound's member list. Neither is a single-value link
-  // property, so missing it here left the Compound with NO dependency on its
-  // members — Kahn then placed it at its document position, and ArchDetail's
-  // compounds sit at doc index 10-14 while every member sits at 269+ (Draft
-  // emits the wire first, the compound last, but the file order is sorted by
-  // name). inputVar() found nothing yet → `compound-missing-members` for all
-  // five compounds, for a pure ordering reason.
-  const linkLists = ['Shapes', 'Links'];
-  for (const p of linkLists) {
+  // `Links` is Part::Compound's member list; `Sections` is Part::Loft's /
+  // Part::Sweep's profile list; `Originals` is a pattern's source features.
+  // None is a single-value link property, so missing them here left the
+  // consumer with NO dependency on its members — Kahn then placed it at its
+  // document position, and ArchDetail's compounds sit at doc index 10-14 while
+  // every member sits at 269+ (Draft emits the wire first, the compound last,
+  // but the file order is sorted by name). inputVar() found nothing yet →
+  // `compound-missing-members` for all five compounds, for a pure ordering
+  // reason. The same defect hit Part::Loft `Sections` (B2, Beds.FCStd
+  // `Loft002` → `loft-section-baked-upstream:Sketch262`).
+  for (const p of LINK_LIST_INPUT_PROPS) {
     const el = obj.properties.get(p)?.children[0];
     if (!el) continue;
     for (const link of el.children) {
@@ -192,6 +199,22 @@ export function generateModel(
       }
     }
   }
+  // Cycle break (B2, 2026-09-26): the loop above stalls when a dependency
+  // cycle exists. Stalled objects used to be DROPPED from `order` entirely —
+  // they never reach the translator, so they keep the container's initial
+  // `feature-translation-pending` disposition and surface as a translation gap
+  // that actually describes an ordering problem. Emitting them anyway (in
+  // iteration order) lets each one degrade to its own honest bake reason
+  // (`*-missing-*` / `*-baked-upstream`) instead. Adding dependency edges —
+  // which is how new translator features get wired — must not be able to make
+  // an object disappear from the ledger.
+  if (order.length < iterationOrder.length) {
+    for (const name of iterationOrder) {
+      if (built.has(name)) continue;
+      built.add(name);
+      order.push(name);
+    }
+  }
 
   const variables = new Map<string, string>();
   const results: GenObjectResult[] = [];
@@ -276,12 +299,18 @@ export function generateModel(
     // Sketches are now real face variables (see the Sketcher::SketchObject
     // branch above), so every dependency that resolves to one flows through.
     const verdict = translateObject(obj, (dep) => {
+      if (process.env.FAIJS_DEBUG_VAR) {
+        console.error(`[dbg] ${name} asks for ${dep} -> ${variables.get(dep) ?? chainVar.get(dep) ?? 'UNDEF'}`);
+      }
       // GOTCHA (test_geomop corpus, 2026-09-20): a dependency on a Body
       // CONTAINER (Part::Cut with Tool→Body) resolves against the Body's
       // accumulated chain head, not `variables` — the container name is
       // never registered there (its result lives in chainVar).
       return variables.get(dep) ?? chainVar.get(dep);
     }, doc.objects, shapeCarriers, brokenShapeAssets, filletEdgesData);
+    if (process.env.FAIJS_DEBUG_VAR && verdict.kind !== 'translated') {
+      console.error(`[dbg] ${name} (${obj.type}) -> ${verdict.kind} ${verdict.reason ?? ''}`);
+    }
     node.verdict = verdict;
     if (verdict.kind === 'translated') {
       // rename output vars to partN sequence

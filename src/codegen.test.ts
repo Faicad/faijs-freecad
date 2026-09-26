@@ -685,4 +685,62 @@ describe('M5 codegen', () => {
     expect(call!.noPositionalArgs, 'GOTCHA: source must NOT be suppressed by noPositionalArgs').toBeFalsy();
     expect(r.code).toContain('cad.revolve(part0, {');
   });
+
+  // GOTCHA (B2, Beds.FCStd `Loft002`, 2026-09-26): `Sections` is an
+  // App::PropertyLinkList, so it was absent from depsOf() — exactly the
+  // ArchDetail `Links` defect one layer down. Without that ordering edge Kahn
+  // placed the loft at its document position (FreeCAD sorts Document.xml by
+  // object name, so `Loft002` precedes `Sketch262`), inputVar() found nothing
+  // and the loft baked as `loft-section-baked-upstream:Sketch262` — reported as
+  // an upstream gap when the sketch was in fact translated and solved.
+  // `Loft002` is the only thing standing between Beds.FCStd and a product.
+  it('orders Part::Loft after its Sections profiles even when declared first', () => {
+    const doc: FcstdDocument = {
+      objects: [
+        withLinkList('Part::Loft', 'Loft002', 'Sections', ['Sketch262', 'Sketch263']),
+        simpleObj('Sketcher::SketchObject', 'Sketch262', {}),
+        simpleObj('Sketcher::SketchObject', 'Sketch263', {}),
+      ],
+      typeIndex: new Map(),
+      meta: new Map(),
+    };
+    const verdicts = new Map([
+      ['Sketch262', { level: 'L0' as const, loopCount: 1 }],
+      ['Sketch263', { level: 'L0' as const, loopCount: 1 }],
+    ]);
+    const contours = new Map([['Sketch262', square()], ['Sketch263', square()]]);
+    const r = generateModel(doc, verdicts, contours, 't');
+    expect(r.calls.map((c) => c.op)).toEqual(['cad.sketch', 'cad.sketch', 'cad.loft']);
+    const loft = r.calls[2]!;
+    expect(loft.source).toBe('Loft002');
+    expect(r.objects.find((o) => o.name === 'Loft002')!.disposition).toBe('translated');
+    // Sections are rendered as a positional array literal of the profile vars.
+    expect(r.code).toContain(`cad.loft([${r.calls[0]!.out}, ${r.calls[1]!.out}]`);
+  });
+
+  // GOTCHA (B2, 2026-09-26): the Kahn loop DROPPED every object caught in a
+  // dependency cycle — they never reached the translator and kept the
+  // container's initial `feature-translation-pending` disposition, so the
+  // ledger blamed translation for an ordering deadlock. Worse, any new
+  // dependency edge added to depsOf() (see the Sections/Links GOTCHAs) could
+  // silently make objects vanish. Cycles must break into iteration order so
+  // each object degrades to its own honest bake reason instead.
+  it('breaks dependency cycles instead of dropping the objects from the ledger', () => {
+    const doc: FcstdDocument = {
+      objects: [
+        simpleObj('Part::Cut', 'Cut1', { Base: { value: 'Cut2' } }),
+        simpleObj('Part::Cut', 'Cut2', { Base: { value: 'Cut1' } }),
+      ],
+      typeIndex: new Map(),
+      meta: new Map(),
+    };
+    const r = generateModel(doc, new Map(), NO_CONTOURS, 't');
+    // Both objects must be accounted for (a dropped object would be missing).
+    expect(r.objects.map((o) => o.name).sort()).toEqual(['Cut1', 'Cut2']);
+    // Neither can resolve its base in a cycle → each bakes with its own reason.
+    for (const o of r.objects) {
+      expect(o.disposition).toBe('baked');
+      expect(o.reason).toBe('cut-missing-dependency');
+    }
+  });
 });

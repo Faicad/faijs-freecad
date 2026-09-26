@@ -143,6 +143,39 @@ const WHITELIST = new Set([
 ]);
 
 /**
+ * Geometry-input properties the translator resolves through `inputVar()` —
+ * single-value links / link-subs (`App::PropertyLink`, `App::PropertyLinkSub`).
+ *
+ * `depsOf` (codegen.ts) MUST wait on exactly these; the two lists used to live
+ * in separate files and drifted apart. `Sections` (Part::Loft / Part::Sweep
+ * profile) and `Spine` (Part::Sweep path) were absent from `depsOf`, so Kahn
+ * placed the feature at its document position — BEFORE its profile sketches.
+ * `inputVar()` then returned undefined and the feature baked as
+ * `loft-section-baked-upstream:<sketch>`, a pure ordering artifact reported as
+ * an upstream gap (B2, Beds.FCStd `Loft002`).
+ *
+ * `UpToFace` (Pad/Pocket "up to face") is deliberately NOT listed: it may
+ * reference geometry produced by a LATER feature, which would deadlock the
+ * topological sort (codegen breaks cycles, so it would only reorder, but the
+ * dependency is not an ordering requirement we can honour).
+ *
+ * @see LINK_LIST_INPUT_PROPS for the multi-value counterparts.
+ */
+export const LINK_INPUT_PROPS = [
+  'Base', 'Tool', 'Profile', 'BaseFeature', 'Source', 'Sketch', 'Spine',
+] as const;
+
+/**
+ * Geometry-input properties the translator resolves as a LIST of links
+ * (`App::PropertyLinkList`) — the multi-value counterpart of
+ * {@link LINK_INPUT_PROPS}. `Sections` (Part::Loft / Part::Sweep) and
+ * `Originals` (pattern source features) belong here, not in the single-value
+ * list: their `<Link value="...">` entries sit one level deeper, so reading
+ * them as a single link silently yielded nothing.
+ */
+export const LINK_LIST_INPUT_PROPS = ['Shapes', 'Links', 'Sections', 'Originals'] as const;
+
+/**
  * True when the object type is on the M4.1 translation whitelist.
  *
  * @param type - the FCStd object type, e.g. "Part::Box".
