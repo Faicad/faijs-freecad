@@ -139,11 +139,11 @@ describe('M4.3 booleans', () => {
       prop('Base', { name: 'Link', attrs: { value: 'Box' } }),
       prop('Tool', { name: 'Link', attrs: { value: 'Cyl' } }),
     ]);
-    const v = translateObject(cut, (dep) => (dep === 'Box' ? 'part0' : dep === 'Cyl' ? 'part1' : undefined));
+    const v = translateObject(cut, (dep) => (dep === 'Box' ? 'Box' : dep === 'Cyl' ? 'Cyl' : undefined));
     expect(v.kind).toBe('translated');
     if (v.kind === 'translated') {
       expect(v.calls[0]!.op).toBe('cad.subtract');
-      expect(v.calls[0]!.inputs).toEqual(['part0', 'part1']);
+      expect(v.calls[0]!.inputs).toEqual(['Box', 'Cyl']);
     }
   });
 
@@ -172,11 +172,11 @@ describe('P5 Part::Mirroring', () => {
       vecXYZ('Normal', 0, 2, 0), // unnormalized on purpose
       prop('Placement', { name: 'PropertyPlacement', attrs: { Px: '0', Py: '190', Pz: '0', Q0: '0', Q1: '0', Q2: '0', Q3: '1' } }),
     ]);
-    const v = translateObject(mir, (dep) => (dep === 'Fillet007' ? 'part7' : undefined));
+    const v = translateObject(mir, (dep) => (dep === 'Fillet007' ? 'Fillet007' : undefined));
     expect(v.kind).toBe('translated');
     if (v.kind !== 'translated') return;
     expect(v.calls[0]!.op).toBe('cad.mirror');
-    expect(v.calls[0]!.inputs).toEqual(['part7']);
+    expect(v.calls[0]!.inputs).toEqual(['Fillet007']);
     // normal normalized; plane point = Base + Placement translation
     expect(v.calls[0]!.params).toMatchObject({ normal: [0, 1, 0], at: [0, 190, 0] });
   });
@@ -254,17 +254,17 @@ describe('P8 Part::Chamfer', () => {
     const data = new Map<string, FilletEdgeEntry[]>([
       ['Chamfer007', [{ edge: 38, size1: 7, size2: 7 }, { edge: 12, size1: 7, size2: 7 }]],
     ]);
-    const v = translateObject(chamferObj(), (dep) => (dep === 'Cut048' ? 'part6' : undefined), undefined, undefined, undefined, data);
+    const v = translateObject(chamferObj(), (dep) => (dep === 'Cut048' ? 'Cut048' : undefined), undefined, undefined, undefined, data);
     expect(v.kind).toBe('translated');
     if (v.kind !== 'translated') return;
     expect(v.calls[0]!.op).toBe('cad.chamfer');
-    expect(v.calls[0]!.inputs).toEqual(['part6']);
-    expect(edgeExprs(v.calls[0]!)).toEqual(['cad.edgeRef(part6, 38)', 'cad.edgeRef(part6, 12)']);
+    expect(v.calls[0]!.inputs).toEqual(['Cut048']);
+    expect(edgeExprs(v.calls[0]!)).toEqual(['cad.edgeRef(Cut048, 38)', 'cad.edgeRef(Cut048, 12)']);
     expect(v.calls[0]!.params).toMatchObject({ type: 'equal', width: 7 });
   });
 
   it('bakes with explicit reason when the binary edges data is absent', () => {
-    const v = translateObject(chamferObj(), (dep) => (dep === 'Cut048' ? 'part6' : undefined));
+    const v = translateObject(chamferObj(), (dep) => (dep === 'Cut048' ? 'Cut048' : undefined));
     expect(v).toMatchObject({ kind: 'baked', reason: 'chamfer-edges-data-missing' });
   });
 
@@ -272,7 +272,7 @@ describe('P8 Part::Chamfer', () => {
     const data = new Map<string, FilletEdgeEntry[]>([
       ['Chamfer007', [{ edge: 38, size1: 7, size2: 7 }, { edge: 12, size1: 2, size2: 2 }]],
     ]);
-    const v = translateObject(chamferObj(), (dep) => (dep === 'Cut048' ? 'part6' : undefined), undefined, undefined, undefined, data);
+    const v = translateObject(chamferObj(), (dep) => (dep === 'Cut048' ? 'Cut048' : undefined), undefined, undefined, undefined, data);
     expect(v).toMatchObject({ kind: 'baked', reason: 'chamfer-mixed-sizes' });
   });
 
@@ -280,7 +280,7 @@ describe('P8 Part::Chamfer', () => {
     const data = new Map<string, FilletEdgeEntry[]>([
       ['Chamfer007', [{ edge: 38, size1: 7, size2: 3 }]],
     ]);
-    const v = translateObject(chamferObj(), (dep) => (dep === 'Cut048' ? 'part6' : undefined), undefined, undefined, undefined, data);
+    const v = translateObject(chamferObj(), (dep) => (dep === 'Cut048' ? 'Cut048' : undefined), undefined, undefined, undefined, data);
     expect(v).toMatchObject({ kind: 'baked', reason: 'chamfer-asymmetric-sizes' });
   });
 
@@ -308,21 +308,21 @@ describe('P9 Part::Fillet', () => {
         { edge: 13, size1: 2, size2: 2 },
       ]],
     ]);
-    const v = translateObject(filletObj(), (dep) => (dep === 'Sweep014' ? 'part6' : undefined), undefined, undefined, undefined, data);
+    const v = translateObject(filletObj(), (dep) => (dep === 'Sweep014' ? 'Sweep014' : undefined), undefined, undefined, undefined, data);
     expect(v.kind).toBe('translated');
     if (v.kind !== 'translated') return;
     expect(v.calls[0]!.op).toBe('cad.fillet');
-    expect(v.calls[0]!.inputs).toEqual(['part6']);
+    expect(v.calls[0]!.inputs).toEqual(['Sweep014']);
     expect(edgeExprs(v.calls[0]!)).toEqual([
-      'cad.edgeRef(part6, 1)',
-      'cad.edgeRef(part6, 3)',
-      'cad.edgeRef(part6, 13)',
+      'cad.edgeRef(Sweep014, 1)',
+      'cad.edgeRef(Sweep014, 3)',
+      'cad.edgeRef(Sweep014, 13)',
     ]);
     expect(v.calls[0]!.params).toMatchObject({ radius: 2 });
   });
 
   it('bakes with explicit reason when the binary edges data is absent', () => {
-    const v = translateObject(filletObj(), (dep) => (dep === 'Sweep014' ? 'part6' : undefined));
+    const v = translateObject(filletObj(), (dep) => (dep === 'Sweep014' ? 'Sweep014' : undefined));
     expect(v).toMatchObject({ kind: 'baked', reason: 'fillet-edges-data-missing' });
   });
 
@@ -330,7 +330,7 @@ describe('P9 Part::Fillet', () => {
     const data = new Map<string, FilletEdgeEntry[]>([
       ['Fillet007', [{ edge: 1, size1: 2, size2: 3 }]],
     ]);
-    const v = translateObject(filletObj(), (dep) => (dep === 'Sweep014' ? 'part6' : undefined), undefined, undefined, undefined, data);
+    const v = translateObject(filletObj(), (dep) => (dep === 'Sweep014' ? 'Sweep014' : undefined), undefined, undefined, undefined, data);
     expect(v).toMatchObject({ kind: 'baked', reason: 'fillet-asymmetric-sizes' });
   });
 
@@ -338,7 +338,7 @@ describe('P9 Part::Fillet', () => {
     const data = new Map<string, FilletEdgeEntry[]>([
       ['Fillet007', [{ edge: 1, size1: 2, size2: 2 }, { edge: 3, size1: 5, size2: 5 }]],
     ]);
-    const v = translateObject(filletObj(), (dep) => (dep === 'Sweep014' ? 'part6' : undefined), undefined, undefined, undefined, data);
+    const v = translateObject(filletObj(), (dep) => (dep === 'Sweep014' ? 'Sweep014' : undefined), undefined, undefined, undefined, data);
     expect(v).toMatchObject({ kind: 'baked', reason: 'fillet-variable-radius' });
   });
 
@@ -353,11 +353,11 @@ describe('P7 Part::Fuse', () => {
       prop('Base', { name: 'Link', attrs: { value: 'Box' } }),
       prop('Tool', { name: 'Link', attrs: { value: 'Cyl' } }),
     ]);
-    const v = translateObject(fuse, (dep) => (dep === 'Box' ? 'part0' : dep === 'Cyl' ? 'part1' : undefined));
+    const v = translateObject(fuse, (dep) => (dep === 'Box' ? 'Box' : dep === 'Cyl' ? 'Cyl' : undefined));
     expect(v.kind).toBe('translated');
     if (v.kind !== 'translated') return;
     expect(v.calls[0]!.op).toBe('cad.union');
-    expect(v.calls[0]!.inputs).toEqual(['part0', 'part1']);
+    expect(v.calls[0]!.inputs).toEqual(['Box', 'Cyl']);
   });
 
   it('bakes with explicit reason when a dependency is missing', () => {
@@ -578,7 +578,7 @@ describe('M4.6 Pad/Pocket', () => {
       prop('BaseFeature', { name: 'Link', attrs: { value: 'Pad' } }),
       prop('Midplane', { name: 'Bool', attrs: { value: 'true' } }),
     ]);
-    const v = translateObject(pocket, (dep) => (dep === 'Sketch001' ? 'sketch1' : dep === 'Pad' ? 'part2' : undefined));
+    const v = translateObject(pocket, (dep) => (dep === 'Sketch001' ? 'Sketch001' : dep === 'Pad' ? 'Pad' : undefined));
     expect(v.kind).toBe('translated');
     if (v.kind === 'translated') {
       expect(v.calls).toHaveLength(4);
@@ -586,7 +586,7 @@ describe('M4.6 Pad/Pocket', () => {
       expect(v.calls[1]!.literals).toEqual([[0, 0, -4]]);
       expect(v.calls[2]!.op).toBe('cad.union');
       expect(v.calls[3]!.op).toBe('cad.subtract');
-      expect(v.calls[3]!.inputs).toEqual(['part2', 'Pocket_cut']);
+      expect(v.calls[3]!.inputs).toEqual(['Pad', 'Pocket_cut']);
     }
   });
 
@@ -612,11 +612,11 @@ describe('M4.6 Pad/Pocket', () => {
       valueText: '',
       attributes: {},
     });
-    const v = translateObject(pat, (dep) => (dep === 'Pocket' ? 'part2' : undefined));
+    const v = translateObject(pat, (dep) => (dep === 'Pocket' ? 'Pocket' : undefined));
     expect(v.kind).toBe('translated');
     if (v.kind === 'translated') {
       expect(v.calls[0]!.op).toBe('cad.linearPattern');
-      expect(v.calls[0]!.inputs).toEqual(['part2']);
+      expect(v.calls[0]!.inputs).toEqual(['Pocket']);
       expect(v.calls[0]!.literals).toEqual([expect.anything(), 4, 10]);
     }
   });
@@ -671,14 +671,14 @@ describe('M4.6 Pad/Pocket', () => {
       prop('Angle', { name: 'Angle', attrs: { value: '360' } }),
       prop('ReferenceAxis', { name: 'LinkSub', attrs: { value: 'V_Axis' } }),
     ]);
-    const v = translateObject(groove, (dep) => (dep === 'Sketch' ? 'sketch0' : dep === 'Pad' ? 'part2' : undefined));
+    const v = translateObject(groove, (dep) => (dep === 'Sketch' ? 'Sketch' : dep === 'Pad' ? 'Pad' : undefined));
     expect(v.kind).toBe('translated');
     if (v.kind === 'translated') {
       expect(v.calls).toHaveLength(2);
       expect(v.calls[0]!.op).toBe('cad.revolve');
       expect(v.calls[0]!.params).toMatchObject({ axis: [0, 0, 1], at: [0, 0, 0] });
       expect(v.calls[1]!.op).toBe('cad.subtract');
-      expect(v.calls[1]!.inputs).toEqual(['part2', 'Groove_groove']);
+      expect(v.calls[1]!.inputs).toEqual(['Pad', 'Groove_groove']);
     }
   });
 
@@ -700,12 +700,12 @@ describe('M4.6 Pad/Pocket', () => {
       prop('Reversed', { name: 'Bool', attrs: { value: 'false' } }),
       prop('Midplane', { name: 'Bool', attrs: { value: 'false' } }),
     ]);
-    const v = translateObject(pocket, (dep) => (dep === 'Sketch001' ? 'sketch1' : dep === 'Pad' ? 'part2' : undefined));
+    const v = translateObject(pocket, (dep) => (dep === 'Sketch001' ? 'Sketch001' : dep === 'Pad' ? 'Pad' : undefined));
     expect(v.kind).toBe('translated');
     if (v.kind === 'translated') {
       expect(v.calls.length).toBe(2);
       expect(v.calls[1]!.op).toBe('cad.subtract');
-      expect(v.calls[1]!.inputs).toEqual(['part2', 'Pocket_cut']);
+      expect(v.calls[1]!.inputs).toEqual(['Pad', 'Pocket_cut']);
     }
   });
 
@@ -723,7 +723,7 @@ describe('M4.6 Pad/Pocket', () => {
       prop('Reversed', { name: 'Bool', attrs: { value: 'true' } }),
       prop('Midplane', { name: 'Bool', attrs: { value: 'false' } }),
     ]);
-    const v = translateObject(pocket, (dep) => (dep === 'Sketch001' ? 'sketch1' : undefined));
+    const v = translateObject(pocket, (dep) => (dep === 'Sketch001' ? 'Sketch001' : undefined));
     expect(v.kind).toBe('translated');
     if (v.kind === 'translated') {
       expect(v.calls.length).toBe(2);
@@ -740,7 +740,7 @@ describe('M4.6 Pad/Pocket', () => {
       prop('Length', { name: 'Float', attrs: { value: '5' } }),
       prop('BaseFeature', { name: 'Link', attrs: { value: 'Ghost' } }),
     ]);
-    const v = translateObject(pocket, (dep) => (dep === 'Sketch001' ? 'sketch1' : undefined));
+    const v = translateObject(pocket, (dep) => (dep === 'Sketch001' ? 'Sketch001' : undefined));
     expect(v).toMatchObject({ kind: 'baked', reason: 'pocket-missing-dependency' });
   });
 
@@ -756,7 +756,7 @@ describe('M4.6 Pad/Pocket', () => {
       prop('BaseFeature', { name: 'Link', attrs: { value: 'Pad' } }),
       prop('Reversed', { name: 'Bool', attrs: { value: 'true' } }),
     ]);
-    const v = translateObject(pocket, (dep) => (dep === 'Sketch001' ? 'sketch1' : dep === 'Pad' ? 'part2' : undefined));
+    const v = translateObject(pocket, (dep) => (dep === 'Sketch001' ? 'Sketch001' : dep === 'Pad' ? 'Pad' : undefined));
     expect(v.kind).toBe('translated');
     if (v.kind === 'translated') {
       expect(v.calls.length).toBe(2);
@@ -765,7 +765,7 @@ describe('M4.6 Pad/Pocket', () => {
       const lit = v.calls[0]!.literals?.[0];
       expect((lit as number[])?.[2]).toBeGreaterThan(0);
       expect(v.calls[1]!.op).toBe('cad.subtract');
-      expect(v.calls[1]!.inputs).toEqual(['part2', 'Pocket_cut']);
+      expect(v.calls[1]!.inputs).toEqual(['Pad', 'Pocket_cut']);
     }
   });
 
@@ -1020,11 +1020,11 @@ describe('M4.7 patterns (LinearPattern / PolarPattern)', () => {
       prop('Length', { name: 'Float', attrs: { value: '20' } }),
       prop('Occurrences', { name: 'Integer', attrs: { value: '3' } }),
     ]);
-    const v = translateObject(lp, (dep) => (dep === 'Pad' ? 'part2' : undefined));
+    const v = translateObject(lp, (dep) => (dep === 'Pad' ? 'Pad' : undefined));
     expect(v.kind).toBe('translated');
     if (v.kind === 'translated') {
       expect(v.calls[0]!.op).toBe('cad.linearPattern');
-      expect(v.calls[0]!.inputs).toEqual(['part2']);
+      expect(v.calls[0]!.inputs).toEqual(['Pad']);
       // X axis, count 3, spacing = length/(occ-1) = 20/2 = 10
       expect(v.calls[0]!.literals).toEqual([[1, 0, 0], 3, 10]);
     }
@@ -1037,7 +1037,7 @@ describe('M4.7 patterns (LinearPattern / PolarPattern)', () => {
       prop('Length', { name: 'Float', attrs: { value: '20' } }),
       prop('Occurrences', { name: 'Integer', attrs: { value: '3' } }),
     ]);
-    const v = translateObject(lp, (dep) => (dep === 'Pad' ? 'part2' : undefined));
+    const v = translateObject(lp, (dep) => (dep === 'Pad' ? 'Pad' : undefined));
     expect(v).toMatchObject({ kind: 'baked', reason: 'linear-pattern-edge-dir-unsupported' });
   });
 
@@ -1048,11 +1048,11 @@ describe('M4.7 patterns (LinearPattern / PolarPattern)', () => {
       prop('Angle', { name: 'Float', attrs: { value: '360' } }),
       prop('Occurrences', { name: 'Integer', attrs: { value: '4' } }),
     ]);
-    const v = translateObject(pp, (dep) => (dep === 'Pad' ? 'part2' : undefined));
+    const v = translateObject(pp, (dep) => (dep === 'Pad' ? 'Pad' : undefined));
     expect(v.kind).toBe('translated');
     if (v.kind === 'translated') {
       expect(v.calls[0]!.op).toBe('cad.circularPattern');
-      expect(v.calls[0]!.inputs).toEqual(['part2']);
+      expect(v.calls[0]!.inputs).toEqual(['Pad']);
       expect(v.calls[0]!.literals).toEqual([[0, 0, 1], 4, 360]);
     }
   });
@@ -1064,14 +1064,14 @@ describe('M4.7 patterns (LinearPattern / PolarPattern)', () => {
       prop('Angle', { name: 'Float', attrs: { value: '360' } }),
       prop('Occurrences', { name: 'Integer', attrs: { value: '4' } }),
     ]);
-    const v = translateObject(pp, (dep) => (dep === 'Pad' ? 'part2' : undefined));
+    const v = translateObject(pp, (dep) => (dep === 'Pad' ? 'Pad' : undefined));
     expect(v).toMatchObject({ kind: 'baked', reason: 'polar-pattern-edge-axis-unsupported' });
   });
 });
 
 describe('M6.1 Fillet / Chamfer (edge anchors via cad.edgeRef)', () => {
   const base = (target: string, subs: string[]): [string, FcstdProperty] => linkSubProp('Base', target, subs);
-  const dep = (d: string): string | undefined => (d === 'Pad001' ? 'part3' : undefined);
+  const dep = (d: string): string | undefined => (d === 'Pad001' ? 'Pad001' : undefined);
 
   it('translates Fillet into cad.fillet over cad.edgeRef anchors', () => {
     const f = obj('PartDesign::Fillet', 'Fillet', [
@@ -1083,8 +1083,8 @@ describe('M6.1 Fillet / Chamfer (edge anchors via cad.edgeRef)', () => {
     if (v.kind === 'translated') {
       const call = v.calls[0]!;
       expect(call.op).toBe('cad.fillet');
-      expect(call.inputs).toEqual(['part3']);
-      expect(edgeExprs(call)).toEqual(['cad.edgeRef(part3, 17)', 'cad.edgeRef(part3, 18)']);
+      expect(call.inputs).toEqual(['Pad001']);
+      expect(edgeExprs(call)).toEqual(['cad.edgeRef(Pad001, 17)', 'cad.edgeRef(Pad001, 18)']);
       expect(call.params['radius']).toBe(4);
     }
   });
@@ -1099,7 +1099,7 @@ describe('M6.1 Fillet / Chamfer (edge anchors via cad.edgeRef)', () => {
     if (v.kind === 'translated') {
       const call = v.calls[0]!;
       expect(call.op).toBe('cad.chamfer');
-      expect(edgeExprs(call)).toEqual(['cad.edgeRef(part3, 11)']);
+      expect(edgeExprs(call)).toEqual(['cad.edgeRef(Pad001, 11)']);
       expect(call.params).toMatchObject({ type: 'equal', width: 1 });
     }
   });
@@ -1114,7 +1114,7 @@ describe('M6.1 Fillet / Chamfer (edge anchors via cad.edgeRef)', () => {
     const v = translateObject(c, dep);
     expect(v.kind).toBe('translated');
     if (v.kind === 'translated') {
-      expect(edgeExprs(v.calls[0]!)).toEqual(['cad.edgeRef(part3, 10)', 'cad.edgeRef(part3, 4)']);
+      expect(edgeExprs(v.calls[0]!)).toEqual(['cad.edgeRef(Pad001, 10)', 'cad.edgeRef(Pad001, 4)']);
       expect(v.calls[0]!.params).toMatchObject({ type: 'twoDistances', width1: 1, width2: 3 });
     }
   });
@@ -1210,7 +1210,7 @@ describe('M6.1 Fillet / Chamfer (edge anchors via cad.edgeRef)', () => {
 // `type-not-whitelisted` gap (convert.ts:95-97 rename consumer was dead code).
 describe('H10 python-opaque verdict (property-based)', () => {
   // local dep: these Python objects reference nothing translatable
-  const dep = (d: string): string | undefined => (d === 'Pad001' ? 'part3' : undefined);
+  const dep = (d: string): string | undefined => (d === 'Pad001' ? 'Pad001' : undefined);
 
   function pythonProp(name: string, attrType: string): [string, FcstdProperty] {
     return [

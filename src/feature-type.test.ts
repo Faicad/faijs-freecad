@@ -32,7 +32,7 @@ function obj(type: string, name: string, props: Record<string, string | number>)
   return { type, name, properties };
 }
 
-const PROFILE_VAR = (dep: string): string | undefined => (dep === 'Sketch' ? 'part0' : dep === 'Pad' ? 'part1' : undefined);
+const PROFILE_VAR = (dep: string): string | undefined => (dep === 'Sketch' ? 'Sketch' : dep === 'Pad' ? 'Pad' : undefined);
 
 describe('M9.1 featureTypeOf', () => {
   it('missing Type property → Length (FreeCAD default)', () => {
@@ -187,11 +187,11 @@ describe('M13 whitelist extensions', () => {
 
   it('Part::Compound with resolvable Links → cad.compound (M13.1)', () => {
     const c = withLinkList('Part::Compound', 'C', 'Links', ['A', 'B']);
-    const v = translateObject(c, (d) => (d === 'A' ? 'part0' : d === 'B' ? 'part1' : undefined));
+    const v = translateObject(c, (d) => (d === 'A' ? 'A' : d === 'B' ? 'B' : undefined));
     expect(v.kind).toBe('translated');
     if (v.kind !== 'translated') return;
     expect(v.calls[0]!.op).toBe('cad.compound');
-    expect(v.calls[0]!.inputs).toEqual(['part0', 'part1']);
+    expect(v.calls[0]!.inputs).toEqual(['A', 'B']);
   });
 
   it('Part::Compound with unresolvable member → bake compound-missing-members', () => {

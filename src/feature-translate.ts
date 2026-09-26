@@ -45,7 +45,7 @@ export interface CadCall {
  * A raw JS expression argument that M5 renders verbatim instead of JSON-encoding.
  *
  * Needed when a call argument is itself a function call against a variable that
- * only exists at run time — e.g. `cad.edgeRef(part3, 17)` for the edge selection
+ * only exists at run time — e.g. `cad.edgeRef(baseShape, 17)` for the edge selection
  * of a Fillet/Chamfer (the EdgeTopoRef must be resolved against the live base
  * shape, so it cannot be baked into the IR as a literal).
  */
@@ -595,7 +595,12 @@ export function translateObject(
     return undefined;
   }
 
-  const out = obj.name; // M5 renames to partN
+  // `out` is the source object's own name. The M5 codegen uses it verbatim as
+  // the generated variable name (sanitized by emitVar) — faijs variable names
+  // are ANY legal JS identifier, never a `partN` counter. `partN` is only a
+  // UI-layer detail (lang/allocate-id.ts derivePartName) and must not be
+  // depended on here.
+  const out = obj.name;
   switch (obj.type) {
     case 'Part::Box': {
       const l = propNum(obj, 'Length') ?? 0;

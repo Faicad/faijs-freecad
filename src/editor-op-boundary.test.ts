@@ -82,8 +82,9 @@ function loweringCallees(): string[] {
   for (const entry of readdirSync(here)) {
     if (!entry.endsWith('.ts') || entry.includes('.test.')) continue;
     // Strip comments first: the doc comments illustrate the call shape with a
-    // placeholder (`const partN = await cad.x(...)` in codegen.ts), and a
-    // placeholder is not an emission. Only real code counts.
+    // placeholder (`let <Name> = cad.x(...)` in codegen.ts, where <Name> is the
+    // FCStd source object name, never partN), and a placeholder is not an
+    // emission. Only real code counts.
     const text = readFileSync(join(here, entry), 'utf-8')
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/\/\/[^\n]*/g, '');

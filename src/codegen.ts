@@ -4,8 +4,9 @@
  * M5.1 topological order: Body.Group order wins where present; otherwise
  * PropertyLink dependency order. Cycles / missing deps → baked (no fallback
  * heuristics — explicit downgrade per plan §12).
- * M5.2 lowering: params → JS constants; calls → `const partN = await cad.x(...)`;
- * statement ids sN. Sketch contours enter as blueprint literals.
+ * M5.2 lowering: params → JS constants; calls → `let <Name> = cad.x(...)` where
+ * `<Name>` is the FCStd source object name (sanitized to a legal JS identifier,
+ * see emitVar); statement ids sN. Sketch contours enter as blueprint literals.
  *
  * 本文件为 Placement 发射平台 `cad.place`（旋转四元数 + 平移，单点）、为产物聚合发射
  * 平台 `cad.compound`（几何复合体，内核 `makeCompound`，持 OCCT 句柄）。这两个是 faijs
@@ -29,7 +30,7 @@ export interface GenObjectResult {
   name: string;
   /** FCStd type id */
   type: string;
-  /** variable name bound in generated code (partN) or undefined when baked */
+  /** variable name bound in generated code (sanitized source object name) or undefined when baked */
   variable?: string;
   calls: CadCall[];
   disposition: 'translated' | 'baked' | 'preserved-only';
@@ -225,8 +226,43 @@ export function generateModel(
   const variables = new Map<string, string>();
   const results: GenObjectResult[] = [];
   const calls: CadCall[] = [];
-  let partCounter = 0;
-  const newVar = (): string => `part${partCounter++}`;
+  // faijs 变量名 = 任意合法 JS 标识符。FCStd→faijs 翻译器用**源对象的名字**
+  // （`obj.name`）作变量名——可追溯、可读，且绝不可能是 `partN`。
+  // `partN` 只是 UI 层生成用户操作代码的细节（`lang/allocate-id.ts` 的
+  // `derivePartName`），随时可改、绝对不能依赖；翻译器自己更不准用。
+  const RESERVED_JS_WORDS = new Set([
+    'break', 'case', 'catch', 'class', 'const', 'continue', 'debugger', 'default',
+    'delete', 'do', 'else', 'export', 'extends', 'finally', 'for', 'function',
+    'if', 'import', 'in', 'instanceof', 'let', 'new', 'return', 'super', 'switch',
+    'this', 'throw', 'try', 'typeof', 'var', 'void', 'while', 'with', 'yield',
+    'enum', 'await', 'static', 'implements', 'package', 'protected', 'interface',
+    'private', 'public', 'arguments', 'eval', 'true', 'false', 'null', 'undefined',
+    'NaN', 'Infinity',
+  ]);
+  const sanitizeIdent = (raw: string): string => {
+    // 把任意 FCStd 对象名收敛为合法 JS 标识符：非法字符 → `_`，首字符非
+    // 字母/`$`/`_` 时前置 `_`，保留字加 `_` 后缀。
+    let s = raw.replace(/[^A-Za-z0-9_$]/g, '_');
+    if (s.length === 0) s = '_';
+    if (!/^[A-Za-z_$]/.test(s)) s = `_${s}`;
+    if (RESERVED_JS_WORDS.has(s)) s = `${s}_`;
+    return s;
+  };
+  // 变量名分配器：以源对象名（或带角色后缀的派生名）为基，去重后产出唯一合法
+  // 标识符。绝不生成 `partN`。
+  const emitVar = ((): ((raw: string) => string) => {
+    const seen = new Set<string>();
+    return (raw: string): string => {
+      let name = sanitizeIdent(raw);
+      if (seen.has(name)) {
+        let i = 2;
+        while (seen.has(`${name}_${i}`)) i++;
+        name = `${name}_${i}`;
+      }
+      seen.add(name);
+      return name;
+    };
+  })();
 
   // D-C (M9.4): same-Body features fuse cumulatively in Body.Group order —
   // the first translated feature is the base, every later additive feature
@@ -259,7 +295,7 @@ export function generateModel(
         // M6 wiring: emit a real `cad.profile({contours})` creator so the
         // solved contour becomes a face variable the Pad/Pocket/Extrusion/
         // Revolution features below can consume.
-        const v = newVar();
+        const v = emitVar(name);
         variables.set(name, v);
         const sketchCall: CadCall = {
           out: v, op: 'cad.profile', source: name, inputs: [], params: { contours },
@@ -319,14 +355,14 @@ export function generateModel(
     }
     node.verdict = verdict;
     if (verdict.kind === 'translated') {
-      // rename output vars to partN sequence
-      // H14: record renames made WITHIN this verdict — JsExpr literals (e.g.
-      // the loft section array) may reference INTERMEDIATE vars created by the
-      // same verdict (`${out}__sec${i}` place copies), whose final partN names
-      // are only decided below; remap them after the loop.
+      // assign each output a stable var derived from its source object name
+      // (emitVar). H14: record renames made WITHIN this verdict — JsExpr
+      // literals (e.g. the loft section array) may reference INTERMEDIATE vars
+      // created by the same verdict (`${out}__sec${i}` place copies), whose
+      // final var names are only decided below; remap them after the loop.
       const verdictRenames = new Map<string, string>();
       for (const call of verdict.calls) {
-        const v = newVar();
+        const v = emitVar(call.out);
         verdictRenames.set(call.out, v);
         variables.set(call.out, v);
         // remap inputs that were intermediate (Pocket_cut) or named outputs
@@ -389,7 +425,7 @@ export function generateModel(
         // 单个刚性放置：旋转（四元数，绕局部原点）+ 平移 = FreeCAD Placement(P,Q)。
         // 直接发 cad.place，避免 euler 往返损失精度（方案 §4.7：两语句合一）。
         const cur = lastVar;
-        const rv = newVar();
+        const rv = emitVar(`${name}__place`);
         variables.set(cur, rv); // map old name → placed var for consumers
         calls.push({
           out: rv, op: 'cad.place', source: name, inputs: [cur],
@@ -445,14 +481,14 @@ export function generateModel(
                     -pl.q[0]!, -pl.q[1]!, -pl.q[2]!, pl.q[3]!,
                   ];
                   const invPos = invertApplyPlacement(pl, [0, 0, 0]);
-                  const rv = newVar();
+                  const rv = emitVar(`${name}__invplace`);
                   const rvCall: CadCall = {
                     out: rv, op: 'cad.place', source: name,
                     inputs: [prev],
                     params: { rotation: invQ, position: invPos },
                   };
                   // insert BEFORE the extrude call: faijs is a statement
-                  // language — `baseFeature: partN` referencing a later
+                  // language — `baseFeature: <var>` referencing a later
                   // statement is E_REFERENCE (parser rejects forward refs).
                   const at = calls.indexOf(c);
                   calls.splice(at < 0 ? calls.length : at, 0, rvCall);
@@ -472,11 +508,11 @@ export function generateModel(
           // extra subtract (would cut twice).
           chainVar.set(body, featureVar);
         } else if (isSubtractive) {
-          const nv = newVar();
+          const nv = emitVar(`${body}__chain`);
           calls.push({ out: nv, op: 'cad.subtract', source: name, inputs: [prev, featureVar], params: {} });
           chainVar.set(body, nv);
         } else {
-          const nv = newVar();
+          const nv = emitVar(`${body}__chain`);
           calls.push({ out: nv, op: 'cad.union', source: name, inputs: [prev, featureVar], params: {} });
           chainVar.set(body, nv);
         }
@@ -530,7 +566,8 @@ export function generateModel(
     // to. GOTCHA (PadTest V6): the previous implementation re-assigned such
     // calls by APPENDING them to the end of the Body file, which broke
     // dependency order — a Body file ended up referencing a variable declared
-    // further down (`let` TDZ ReferenceError at run time: `part8` used `part6`).
+    // further down (`let` TDZ ReferenceError at run time: a later chain var used
+    // an earlier one).
     // Filtering `calls` in place preserves the topological order.
     const assigned = new Map<string, string>(); // call.out → Body file name
     // chain-head var → terminal alias (and owning Body) — needed DURING
@@ -596,7 +633,7 @@ export function generateModel(
     // Always import the per-Body terminals: the aggregate entry references
     // `<Body>_out` in BOTH the cad.compound (multi-Body) and the single-Body alias
     // path, so a missing import is a SEC_FREE_IDENT parse error (GOTCHA: the
-    // single-Body branch previously emitted `let part_out = <Body>_out;` with
+    // single-Body branch previously emitted `let assembly = <Body>_out;` with
     // no import). `mainCalls` may still be empty here.
     if (members.length >= 1) {
       for (const b of bodiesWithGeo) {
@@ -608,14 +645,14 @@ export function generateModel(
       lines.push(`let ${c.out} = ${c.op}(${renderArgs(c)}); // ${id} ${c.source}`);
     }
     if (members.length > 1) {
-      rootVar = 'part_out';
-      lines.push(`let part_out = cad.compound({ members: [${members.join(', ')}] });`);
+      rootVar = 'assembly';
+      lines.push(`let assembly = cad.compound({ members: [${members.join(', ')}] });`);
     } else if (members.length === 1) {
       // single Body: the imported terminal IS the result — alias keeps a
       // stable root name for executors
       rootVar = members[0];
-      lines.push(`let part_out = ${rootVar}; // single-Body aggregate`);
-      rootVar = 'part_out';
+      lines.push(`let assembly = ${rootVar}; // single-Body aggregate`);
+      rootVar = 'assembly';
     }
     code = lines.join('\n') + '\n';
   } else {
@@ -643,7 +680,8 @@ function lowerBody(calls: CadCall[], label: string, body: string): string {
 }
 
 /** M5.2 — lower the call plan to .fai.js source. faijs syntax: top-level
- * statement flow with `let partN = cad.x(...)`; no wrapper function. */
+ * statement flow with `let <Name> = cad.x(...)` (Name = source object name);
+ * no wrapper function. */
 function lower(calls: CadCall[], baseName: string): string {
   const lines: string[] = [];
   lines.push(`// Generated by faijs FCStd port — ${baseName}`);
@@ -658,7 +696,7 @@ function lower(calls: CadCall[], baseName: string): string {
   const consumed = new Set(calls.flatMap((c) => c.inputs));
   const roots = calls.filter((c) => !consumed.has(c.out)).map((c) => c.out);
   if (roots.length > 1) {
-    lines.push(`let part_out = cad.compound({ members: [${roots.join(', ')}] });`);
+    lines.push(`let assembly = cad.compound({ members: [${roots.join(', ')}] });`);
   } else if (roots.length === 0) {
     lines.push(`// no translated geometry (all baked)`);
   }

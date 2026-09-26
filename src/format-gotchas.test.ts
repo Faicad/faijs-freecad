@@ -74,9 +74,9 @@ describe('FCStd format gotchas', () => {
       el('Property', { name: 'Sketch', type: 'App::PropertyLink' }, [el('Link', { value: 'Sketch002' })]),
       el('Property', { name: 'Length', type: 'App::PropertyLength' }, [el('Float', { value: '10' })]),
     ]);
-    const v = translateObject(pad, (dep) => (dep === 'Sketch002' ? 'part1' : undefined));
+    const v = translateObject(pad, (dep) => (dep === 'Sketch002' ? 'Sketch002' : undefined));
     expect(v.kind).toBe('translated');
-    if (v.kind === 'translated') expect(v.calls[0]!.inputs).toEqual(['part1']);
+    if (v.kind === 'translated') expect(v.calls[0]!.inputs).toEqual(['Sketch002']);
   });
 
   it('GOTCHA: ObjectData <Object> has no type attribute — resolve via <Objects> index', () => {

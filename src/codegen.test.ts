@@ -1,7 +1,8 @@
 /**
  * M5 tests — dependency ordering (M5.1), code lowering (M5.2), statement
- * ids sN / variables partN, multi-root grouping, and M6 sketch→cad.profile
- * wiring (Pad/Pocket become real cad.extrude / cad.subtract calls).
+ * ids sN / variables (FCStd source object names, sanitized), multi-root
+ * grouping, and M6 sketch→cad.profile wiring (Pad/Pocket become real
+ * cad.extrude / cad.subtract calls).
  */
 import { describe, it, expect } from 'vitest';
 import { generateModel } from './codegen.js';
@@ -80,7 +81,7 @@ function square(): Contour[] {
 const NO_CONTOURS = new Map<string, Contour[]>();
 
 describe('M5 codegen', () => {
-  it('orders Box → Cut in dependency order and lowers to sN/partN', () => {
+  it('orders Box → Cut in dependency order and lowers to sN/<source-name>', () => {
     const doc: FcstdDocument = {
       objects: [
         // deliberately out of dependency order: Cut first
@@ -94,10 +95,10 @@ describe('M5 codegen', () => {
     };
     const result = generateModel(doc, new Map(), NO_CONTOURS, 'test');
     expect(result.calls.map((c) => c.op)).toEqual(['cad.box', 'cad.cylinder', 'cad.subtract']);
-    expect(result.calls[2]!.inputs).toEqual(['part0', 'part1']);
-    expect(result.code).toContain('let part0 = cad.box(');
+    expect(result.calls[2]!.inputs).toEqual(['Box', 'Cyl']);
+    expect(result.code).toContain('let Box = cad.box(');
     expect(result.code).toContain('s0');
-    expect(result.code).toContain('part2');
+    expect(result.code).toContain('let Cut = cad.subtract(');
     // Origin preserved-only
     const origin = result.objects.find((o) => o.name === 'Origin');
     expect(origin).toMatchObject({ disposition: 'preserved-only' });
@@ -169,7 +170,7 @@ describe('M5 codegen', () => {
       meta: new Map(),
     };
     const r = generateModel(doc, new Map(), NO_CONTOURS, 't');
-    expect(r.code).toContain('cad.compound({ members: [part0, part1] })');
+    expect(r.code).toContain('cad.compound({ members: [A, B] })');
   });
 
   it('emits Pad + Pocket as real cad.extrude / cad.subtract when sketch contours are wired', () => {
@@ -222,7 +223,7 @@ describe('M5 codegen', () => {
     expect(f).toMatchObject({ disposition: 'translated' });
     // the edge refs must survive as live calls against the base variable,
     // not as JSON-encoded literals.
-    expect(r.code).toContain('let part1 = cad.fillet(part0, { edges: [cad.edgeRef(part0, 17), cad.edgeRef(part0, 18)], radius: 4 });');
+    expect(r.code).toContain('let Fillet = cad.fillet(Box, { edges: [cad.edgeRef(Box, 17), cad.edgeRef(Box, 18)], radius: 4 });');
     expect(r.code).not.toContain('"__jsExpr"');
   });
 
@@ -233,7 +234,7 @@ describe('M5 codegen', () => {
       meta: new Map(),
     };
     const r = generateModel(doc, new Map(), NO_CONTOURS, 't');
-    expect(r.code).toContain('cad.compound({ members: [part0, part1] })');
+    expect(r.code).toContain('cad.compound({ members: [A, B] })');
   });
 
   // GOTCHA: renderArgs used to emit `cad.profile(, { ... })` for calls with no
@@ -302,12 +303,16 @@ describe('M5 codegen', () => {
     // (base − cut, BaseFeature resolved to the chain head) advances the chain,
     // then Pad001 unions onto the new head. The Pocket base feature does NOT
     // get a second cad.subtract against the chain.
-    const chainOps = r.calls.filter((c) => (c.op === 'cad.union' || c.op === 'cad.subtract') && !c.out.includes('__'));
+    // chain-level union/subtract ops: body folding never uses `__place` /
+    // `__invplace` (those are cad.place), so just filter by op. (The chain
+    // var is `<Body>__chain`, which intentionally contains `__`.)
+    const chainOps = r.calls.filter((c) => c.op === 'cad.union' || c.op === 'cad.subtract');
     expect(chainOps.map((c) => c.op)).toEqual(['cad.subtract', 'cad.union']);
     // Pad001's union consumes the Pocket output (chain head), not the raw Pad
     const pocketOut = chainOps[0]!.out;
     expect(chainOps[1]!.inputs).toContain(pocketOut);
-    expect(r.code).not.toContain('cad.compound({ members: [part0');
+    // a single Body's chain must not emit any cad.compound aggregation
+    expect(r.code).not.toContain('cad.compound(');
   });
 
   // M10.3: two Bodies with geometry → one file per Body + aggregate main
@@ -359,8 +364,8 @@ describe('M5 codegen', () => {
     // relative-import contract, then groups them
     expect(r.code).toContain(`import { Body_out } from './Body.fai.js';`);
     expect(r.code).toContain(`import { Body001_out } from './Body001.fai.js';`);
-    expect(r.code).toContain('let part_out = cad.compound({ members: [Body_out, Body001_out] });');
-    expect(r.rootVar).toBe('part_out');
+    expect(r.code).toContain('let assembly = cad.compound({ members: [Body_out, Body001_out] });');
+    expect(r.rootVar).toBe('assembly');
   });
 
   // M10.5: loose Part features (no Body) stay in main.fai.js even when
@@ -466,7 +471,9 @@ describe('M5 codegen', () => {
     const ext = r.calls.find((c) => c.source === 'Extrude');
     expect(ext, 'Extrude must translate, not gap').toBeDefined();
     expect(ext!.op).toBe('cad.extrude');
-    expect(ext!.inputs[0]).not.toBe('Circle003'); // resolved to a partN var
+    // The Base resolves to the sanitized source-name variable (Circle003 —
+    // faijs variable names are the FCStd object names, never partN).
+    expect(ext!.inputs[0]).toBe('Circle003');
   });
 
   // GOTCHA (ArchDetail corpus, 2026-09-21): `Links` is an App::PropertyLinkList
@@ -523,7 +530,10 @@ describe('M5 codegen', () => {
     const compound = r.calls.find((c) => c.source === 'Compound006')!;
     expect(compound.op).toBe('cad.compound');
     expect(compound.inputs.length).toBe(2);
-    expect(compound.inputs.every((i) => /^part\d+$/.test(i))).toBe(true);
+    // inputs are the sanitized FCStd source-name variables (Wire045 / Wire046),
+    // NOT a partN counter — pin the real names and guard against regression.
+    expect(compound.inputs).toEqual(['Wire045', 'Wire046']);
+    expect(compound.inputs.every((i) => /^part\d+$/.test(i))).toBe(false);
     expect(r.calls.indexOf(compound)).toBe(r.calls.length - 1);
   });
 
@@ -664,9 +674,9 @@ describe('M5 codegen', () => {
     const r = generateModel(doc, new Map(), NO_CONTOURS, 't');
     const call = r.calls.find((c) => c.op === 'cad.mirror');
     expect(call, 'mirror must translate').toBeDefined();
-    expect(call!.inputs[0], 'source shape must be a positional input').toBe('part0');
+    expect(call!.inputs[0], 'source shape must be a positional input').toBe('Box');
     expect(call!.noPositionalArgs, 'GOTCHA: source must NOT be suppressed by noPositionalArgs').toBeFalsy();
-    expect(r.code).toContain('cad.mirror(part0, {');
+    expect(r.code).toContain('cad.mirror(Box, {');
   });
 
   it('Part::Revolution lowers to cad.revolve(<input>, { axis, at, angle }) with the source as a positional arg', () => {
@@ -685,9 +695,9 @@ describe('M5 codegen', () => {
     const r = generateModel(doc, new Map(), NO_CONTOURS, 't');
     const call = r.calls.find((c) => c.op === 'cad.revolve');
     expect(call, 'revolve must translate').toBeDefined();
-    expect(call!.inputs[0], 'source shape must be a positional input').toBe('part0');
+    expect(call!.inputs[0], 'source shape must be a positional input').toBe('Box');
     expect(call!.noPositionalArgs, 'GOTCHA: source must NOT be suppressed by noPositionalArgs').toBeFalsy();
-    expect(r.code).toContain('cad.revolve(part0, {');
+    expect(r.code).toContain('cad.revolve(Box, {');
   });
 
   // GOTCHA (B2, Beds.FCStd `Loft002`, 2026-09-26): `Sections` is an
