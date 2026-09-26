@@ -1538,6 +1538,61 @@ describe('P2-3 sweep / loft / helix (Part-workbench curve/loft features)', () =>
     expect(v).toMatchObject({ kind: 'baked', reason: 'loft-closed-unsupported' });
   });
 
+  // H14 (Beds, 2026-09-26): sketch sections are emitted in sketch-LOCAL frame
+  // (cad.profile, no placement), and a Part::Loft has no 'Sketch' property so
+  // codegen's M8.3 feature-placement step cannot re-orient them. Each sketch
+  // section with a non-identity Placement must get its own cad.place BEFORE
+  // the loft, otherwise all sections collapse onto the local XY plane and
+  // ThruSections yields a degenerate zero-height solid (7 faces, volume 0).
+  it('places sketch sections with non-identity Placement before lofting (H14 Beds regression)', () => {
+    const sketchA = obj('Sketcher::SketchObject', 'SketchA', [
+      // identity → must NOT be wrapped in a place call
+      prop('Placement', { name: 'App::PropertyPlacement', attrs: {} }),
+    ]);
+    const sketchB = obj('Sketcher::SketchObject', 'SketchB', [
+      prop('Placement', { name: 'PropertyPlacement', attrs: { Px: '0', Py: '0', Pz: '250', Q0: '0', Q1: '0', Q2: '0', Q3: '1' } }),
+    ]);
+    const loft = obj('Part::Loft', 'Loft', [linkListProp('Sections', ['SketchA', 'SketchB'])]);
+    const v = translateObject(
+      loft,
+      (dep) => (dep === 'SketchA' ? 'a0' : dep === 'SketchB' ? 'b0' : undefined),
+      [sketchA, sketchB, loft],
+    );
+    expect(v.kind).toBe('translated');
+    if (v.kind === 'translated') {
+      expect(v.calls).toHaveLength(2); // 1 place (SketchB only) + loft
+      const place = v.calls[0]!;
+      expect(place.op).toBe('cad.place');
+      expect(place.inputs).toEqual(['b0']);
+      expect(place.params.position).toEqual([0, 0, 250]);
+      expect(place.params.rotation).toEqual([0, 0, 0, 1]);
+      const loftCall = v.calls[1]!;
+      expect(loftCall.op).toBe('cad.loft');
+      const lit = loftCall.literals?.[0];
+      // placed copy replaces the raw section var inside the array literal
+      expect(isJsExpr(lit) ? lit.__jsExpr : lit).toBe('[a0, Loft__sec1]');
+    }
+  });
+
+  it('does not place non-sketch sections (their emitting statement already placed them)', () => {
+    const asset = obj('Part::Feature', 'SecAsset', []);
+    const loft = obj('Part::Loft', 'Loft', [linkListProp('Sections', ['SecAsset', 'SketchB'])]);
+    const sketchB = obj('Sketcher::SketchObject', 'SketchB', [
+      prop('Placement', { name: 'PropertyPlacement', attrs: { Px: '0', Py: '0', Pz: '450', Q0: '0', Q1: '0', Q2: '0', Q3: '1' } }),
+    ]);
+    const v = translateObject(
+      loft,
+      (dep) => (dep === 'SecAsset' ? 'a0' : dep === 'SketchB' ? 'b0' : undefined),
+      [asset, sketchB, loft],
+    );
+    expect(v.kind).toBe('translated');
+    if (v.kind === 'translated') {
+      const placeCalls = v.calls.filter((c) => c.op === 'cad.place');
+      expect(placeCalls).toHaveLength(1);
+      expect(placeCalls[0]!.inputs).toEqual(['b0']); // only the sketch section
+    }
+  });
+
   it('translates Part::Helix → cad.helix({radius,pitch,turns}) deriving turns from Height/Pitch', () => {
     const h = obj('Part::Helix', 'Helix', [
       prop('Radius', { name: 'Float', attrs: { value: '5' } }),

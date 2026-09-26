@@ -319,8 +319,14 @@ export function generateModel(
     node.verdict = verdict;
     if (verdict.kind === 'translated') {
       // rename output vars to partN sequence
+      // H14: record renames made WITHIN this verdict — JsExpr literals (e.g.
+      // the loft section array) may reference INTERMEDIATE vars created by the
+      // same verdict (`${out}__sec${i}` place copies), whose final partN names
+      // are only decided below; remap them after the loop.
+      const verdictRenames = new Map<string, string>();
       for (const call of verdict.calls) {
         const v = newVar();
+        verdictRenames.set(call.out, v);
         variables.set(call.out, v);
         // remap inputs that were intermediate (Pocket_cut) or named outputs
         call.inputs = call.inputs.map((i) => variables.get(i) ?? i);
@@ -337,6 +343,21 @@ export function generateModel(
         }
         call.out = v;
         calls.push(call);
+      }
+      if (verdictRenames.size > 0) {
+        for (const call of calls.slice(-verdict.calls.length)) {
+          call.literals = call.literals?.map((l) =>
+            isJsExpr(l)
+              ? jsExpr(
+                  [...verdictRenames].reduce(
+                    (s, [old, nw]) =>
+                      s.replace(new RegExp(`\\b${old.replace(/[^A-Za-z0-9_$]/g, '\\$&')}\\b`, 'g'), nw),
+                    l.__jsExpr,
+                  ),
+                )
+              : l,
+          );
+        }
       }
       // M8.3: features build in sketch-local coordinates (cad.profile lays the
       // face on local XY; extrude runs along local +Z). Re-orient the final

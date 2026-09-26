@@ -11,7 +11,7 @@
  */
 import type { FcstdObject } from './document.js';
 import { parseExpressionEngine, evalWithDoc, type ExpressionBinding } from './expressions.js';
-import { placementOf, quatToMatrix } from './placement.js';
+import { isIdentityPlacement, placementOf, quatToMatrix } from './placement.js';
 import { shapeBrpFile } from './external-geo.js';
 import type { FilletEdgeEntry } from './fillet-edges.js';
 
@@ -1467,16 +1467,38 @@ export function translateObject(
       const ruled = propBool(obj, 'Ruled'); // FC default true; emit only when false
       const params: Record<string, unknown> = {};
       if (ruled === false) params.ruled = false;
+      // H14 (Beds, 2026-09-26): sketch sections are emitted as bare
+      // `cad.profile` faces in sketch-LOCAL frame — codegen's M8.3 placement
+      // step places only the FEATURE result (a Pad places its extrude by the
+      // sketch's Placement), and a loft has NO single 'Sketch' property, so
+      // nothing re-orients its sections. Each sketch section must be rigidly
+      // placed by its OWN sketch Placement before skinning; otherwise every
+      // section collapses onto the local XY plane and ThruSections yields a
+      // degenerate zero-height "solid" (Beds s13/s25/s26/s32: 7 faces,
+      // volume 0 → parity solids 10vs6, volume/area/com off). Non-sketch
+      // sections (shape assets / features) are already placed by their own
+      // emitting statement — leave them untouched (no double-place).
+      const calls: CadCall[] = [];
+      const placedVars = sectionVars.map((v, i) => {
+        const sec = docObjects?.find((o) => o.name === sections[i]);
+        if (!sec || sec.type !== 'Sketcher::SketchObject') return v!;
+        const pl = placementOf(sec);
+        if (isIdentityPlacement(pl)) return v!;
+        const pv = `${out}__sec${i}`;
+        calls.push({
+          out: pv, op: 'cad.place', source: obj.name, inputs: [v!],
+          params: { rotation: [...pl.q] as [number, number, number, number], position: [...pl.p] as [number, number, number] },
+        });
+        return pv;
+      });
       // Sections rendered as a positional array literal. Remap-safe: inputVar
       // already returns the renamed var (deps are processed before dependents,
       // cf. the fillet edgeRefArgs JsExpr precedent).
-      return {
-        kind: 'translated',
-        calls: [{
-          out, op: 'cad.loft', source: obj.name, inputs: [],
-          literals: [jsExpr(`[${sectionVars.join(', ')}]`)], params,
-        }],
-      };
+      calls.push({
+        out, op: 'cad.loft', source: obj.name, inputs: [],
+        literals: [jsExpr(`[${placedVars.join(', ')}]`)], params,
+      });
+      return { kind: 'translated', calls };
     }
     case 'Part::Helix': {
       // P2-3: FreeCAD Part::Helix (3D curve primitive) → cad.helix({radius,pitch,turns}).
