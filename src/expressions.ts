@@ -98,6 +98,85 @@ function objectLabel(o: FcstdObject): string | undefined {
 }
 
 /**
+ * B1（2026-09-26）：`Sketch.Constraints.<名称>` —— 具名约束的驱动尺寸。
+ *
+ * 语料实测（Bathroom_cabinet_sink.FCStd）：`Clone2D001` 的
+ * `.AttachmentOffset.Base.x = -Sketch229.Constraints.Length / 2`，
+ * `Extrude_Sketch094` 的 `Dir.x = Esboco_janela_fixa_persiana.Constraints.Largura_vao
+ * - 2 * …Constraints.Perfil_montante…`。这不是 Spreadsheet 别名，是草图里
+ * 用户命名的约束（`<Constrain Name="Length" Value="…"/>`）。旧解析把
+ * `Sketch229.Constraints` 当作 `对象.别名` 去查表，必然落空，`.Length` 作为
+ * 残留标识符让整条算术求值为 undefined → 属性被判「非常量」。
+ */
+function sketchConstraintValue(obj: FcstdObject, name: string): ExprValue {
+  const list = obj.properties.get('Constraints')?.children[0];
+  if (!list) return undefined;
+  const hit = list.children.find((c) => c.tagName === 'Constrain' && c.attributes['Name'] === name);
+  const v = hit?.attributes['Value'];
+  if (v === undefined || v === '') return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+/**
+ * B1（2026-09-26）：通用 `Object.Property` 引用 —— 任意对象的数值属性。
+ *
+ * 语料实测（RND_455_00194.fcstd）：`Pad010.Length = Pad_MountingPadEdge.Length`，
+ * 即一个 Pad 直接引用另一个 Pad 自己的 Length。取值优先走被引用对象的
+ * ExpressionEngine 绑定（FreeCAD 打开时按表达式重算），否则取存档数值。
+ * 递归求值带环保护：`Pad_A.Length = Pad_B.Length`、`Pad_B.Length = Pad_A.Length`
+ * 这类环必须落到 undefined，不能爆栈。
+ */
+function objectPropertyValue(
+  obj: FcstdObject,
+  prop: string,
+  docObjects: readonly FcstdObject[],
+  seen: Set<string>,
+): ExprValue {
+  const key = `${obj.name}.${prop}`;
+  if (seen.has(key)) return undefined;
+  seen.add(key);
+  const norm = (p: string): string => (p.startsWith('.') ? p.slice(1) : p);
+  const binding = parseExpressionEngine(obj.properties.get('ExpressionEngine'))
+    .find((b) => norm(b.path) === prop);
+  if (binding) {
+    if (binding.value !== undefined) return binding.value;
+    return evalWithDoc(binding.expression, docObjects, obj, seen);
+  }
+  const el = obj.properties.get(prop)?.children[0];
+  const v = el?.attributes['value'];
+  if (v === undefined || v === '') return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+/**
+ * 解析一条 `Object.Segment[.Sub]` 引用为数值。
+ *
+ * 三种形态按序尝试，先命中先返回：
+ *  1. Spreadsheet / VarSet 别名（既有三跳解析，B1 头部形态）；
+ *  2. `Sketch.Constraints.<名称>`（草图具名约束的驱动尺寸）；
+ *  3. 普通对象的数值属性（含其自身的表达式绑定，递归一跳）。
+ */
+function docReferenceValue(
+  docObjects: readonly FcstdObject[],
+  label: string,
+  seg: string,
+  sub: string | undefined,
+  seen: Set<string>,
+): ExprValue {
+  const alias = spreadsheetAliasValue(docObjects, label, seg);
+  if (alias !== undefined) return alias;
+  const target = docObjects.find((o) => objectLabel(o) === label || o.name === label);
+  if (!target) return undefined;
+  if (sub !== undefined && (seg === 'Constraints' || target.type === 'Sketcher::SketchObject')) {
+    return sketchConstraintValue(target, sub);
+  }
+  if (sub !== undefined) return undefined; // 更深的子路径不支持，不猜
+  return objectPropertyValue(target, seg, docObjects, seen);
+}
+
+/**
  * 带文档上下文的表达式求值：引用（`<<L>>.A` / `L.A` / 同表地址 `B2`）替换为
  * 数值后，求值仅含常数与 + - * / ( ) 的算术。任何残留标识符 / 函数 → undefined
  * （no heuristic fallback）。返回值单位跟随单元格（mm 语境，角度单元格调用方解释）。
@@ -118,16 +197,22 @@ export function evalWithDoc(
   expr: string,
   docObjects: readonly FcstdObject[],
   self?: FcstdObject,
+  /** 递归环保护：`Object.Property` 可能互相引用（`Pad_A.Length = Pad_B.Length`）。 */
+  seen: Set<string> = new Set(),
 ): ExprValue {
   let s = expr.trim();
-  // 引用替换：<<Label>>.Alias | Label.Alias | Object.Alias（标识符.标识符）
-  s = s.replace(/<<([^>]+)>>\.([A-Za-z_][A-Za-z0-9_]*)|([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)/g,
-    (whole, brLabel, brAlias, plLabel, plAlias) => {
-      const label = brLabel ?? plLabel;
-      const alias = brAlias ?? plAlias;
-      const v = spreadsheetAliasValue(docObjects, label!, alias!);
+  // 引用替换：<<Label>>.Alias | Label.Alias | Object.Alias，以及三段式
+  // Object.Constraints.<名称>（B1，2026-09-26）。
+  s = s.replace(
+    /<<([^>]+)>>\.([A-Za-z_][A-Za-z0-9_]*)(?:\.([A-Za-z_][A-Za-z0-9_]*))?|([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)(?:\.([A-Za-z_][A-Za-z0-9_]*))?/g,
+    (whole, brLabel, brSeg, brSub, plLabel, plSeg, plSub) => {
+      const label: string = brLabel ?? plLabel ?? '';
+      const seg: string = brSeg ?? plSeg ?? '';
+      const sub: string | undefined = brSub ?? plSub;
+      const v = docReferenceValue(docObjects, label, seg, sub, seen);
       return v === undefined ? whole : `(${v})`;
-    });
+    },
+  );
   // 同表地址（self 表内 address→alias 值，如 `B2` / `B2*2`）：仅当 self 是表
   if (self?.type === 'Spreadsheet::Sheet') {
     s = s.replace(/\b([A-Z]+[0-9]+)\b/g, (whole, addr: string) => {
