@@ -1136,6 +1136,33 @@ export function translateObject(
       // FreeCAD 0.20+ serializes the flag as `Reversed`; older files used
       // `Reverse`. Accept both.
       const reversed = propBool(obj, 'Reversed') || propBool(obj, 'Reverse');
+      // W2 (2026-09-27, Shutter Double doors): `Part::Extrusion` extrudes a
+      // GLOBAL `Dir` against a profile that codegen emits in the SKETCH-LOCAL
+      // frame (M8.3 — `cad.profile` lays the face on the sketch's own plane,
+      // the result is re-placed afterwards). When the base sketch carries a
+      // rotated Placement, the global Dir must be rotated INTO that local
+      // frame (Rᵀ·dir) before extruding, or the sweep direction lies IN the
+      // profile plane → zero-area degenerate solid (sketch on XZ: Q=(0,.7071,0,
+      // .7071), Dir=(0,-10,0) → all faces at z≈0, volume 0). Non-sketch bases
+      // (solids) are already in the global frame — leave them untouched.
+      // codegen's M8.3 placement step resolves the sketch via the SAME `Base`
+      // link (see its baseLinkResolution note) and re-places the result.
+      let effDir = dir;
+      if (docObjects && base) {
+        const baseObj = docObjects.find((o) => o.name === base);
+        if (baseObj?.type === 'Sketcher::SketchObject') {
+          const skPl = placementOf(baseObj);
+          if (!isIdentityPlacement(skPl)) {
+            const m = quatToMatrix(skPl.q);
+            // Rᵀ (inverse rotation): global dir → sketch-local dir
+            effDir = [
+              m[0]! * dir[0]! + m[3]! * dir[1]! + m[6]! * dir[2]!,
+              m[1]! * dir[0]! + m[4]! * dir[1]! + m[7]! * dir[2]!,
+              m[2]! * dir[0]! + m[5]! * dir[1]! + m[8]! * dir[2]!,
+            ];
+          }
+        }
+      }
       // E4 (2026-09-23): Part::Extrusion serializes in three shapes. New
       // format: LengthFwd/LengthRev (unit Dir). Old format: only Dir, whose
       // magnitude IS the extrusion length. Legacy: Length + Dir. The previous
@@ -1149,7 +1176,7 @@ export function translateObject(
         // geometry. Bake with an explicit reason instead.
         return { kind: 'baked', reason: 'extrusion-taper-unsupported' };
       }
-      const unitDir = normalize3(dir);
+      const unitDir = normalize3(effDir);
       const calls: CadCall[] = [];
       const emitExtrude = (outName: string, fwdLen: number, revLen: number) => {
         if (fwdLen > 0) {
@@ -1193,18 +1220,18 @@ export function translateObject(
           kind: 'translated',
           calls: [{
             out, op: 'cad.extrude', source: obj.name, inputs: [baseVar],
-            literals: [[s * dir[0] * legacyLen, s * dir[1] * legacyLen, s * dir[2] * legacyLen]], params: {},
+            literals: [[s * effDir[0]! * legacyLen, s * effDir[1]! * legacyLen, s * effDir[2]! * legacyLen]], params: {},
           }],
         };
       }
       // Old format: |Dir| IS the extrusion length; Dir is the vector.
-      const mag = Math.hypot(dir[0], dir[1], dir[2]);
+      const mag = Math.hypot(effDir[0], effDir[1], effDir[2]);
       if (mag <= 0) return { kind: 'baked', reason: 'extrusion-zero-length' };
       return {
         kind: 'translated',
         calls: [{
           out, op: 'cad.extrude', source: obj.name, inputs: [baseVar],
-          literals: [reversed ? [-dir[0], -dir[1], -dir[2]] : dir], params: {},
+          literals: [reversed ? [-effDir[0], -effDir[1], -effDir[2]] : effDir], params: {},
         }],
       };
     }

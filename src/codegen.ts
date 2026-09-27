@@ -410,8 +410,19 @@ export function generateModel(
       // off 1.67). The sketch's Placement is the authoritative frame for the
       // built geometry; fall back to the feature's own for sketchless features.
       const lastVar = verdict.calls.at(-1)?.out;
-      const sketchLink = obj.properties.get('Sketch')?.children[0]?.attributes['value'];
-      const pl = (sketchLink ? placements?.get(sketchLink) : undefined) ?? placements?.get(name);
+      // M8.3 frame resolution: the profile sketch link is `Sketch` on
+      // PartDesign features (Pad/Pocket/Revolution), but `Base` on
+      // `Part::Extrusion` — a plain Part-workbench extrude of a sketch.
+      // W2 (2026-09-27, Shutter Double doors): reading only `Sketch` left
+      // Part::Extrusion results un-placed (built in sketch-local frame but
+      // never re-oriented by the sketch's Placement).
+      const sketchLink =
+        obj.properties.get('Sketch')?.children[0]?.attributes['value'] ??
+        obj.properties.get('Base')?.children[0]?.attributes['value'];
+      const sketchIsSketchObj =
+        sketchLink !== undefined &&
+        byName.get(sketchLink)?.type === 'Sketcher::SketchObject';
+      const pl = (sketchIsSketchObj ? placements?.get(sketchLink) : undefined) ?? placements?.get(name);
       // GOTCHA (H13 REVISED twice, 2026-09-26): shape-asset .brp members
       // SOMETIMES embed the Placement in their Locations header (TO92,
       // Beds Section) and sometimes don't (Beds Section002-005). The old

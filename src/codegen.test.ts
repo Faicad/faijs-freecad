@@ -208,6 +208,48 @@ describe('M5 codegen', () => {
     expect(r.code).not.toContain('cad.fai_extrude');
   });
 
+  // GOTCHA (W2, 2026-09-27, Shutter "Double doors with shutters and trim"):
+  // Part::Extrusion links its profile via `Base` (not PartDesign's `Sketch`).
+  // The M8.3 placement step read only `Sketch`, so an extrude built in the
+  // sketch-local frame was never re-oriented by the sketch's rotated
+  // Placement — all faces collapsed onto z≈0 (sketch on XZ). Correct usage:
+  // resolve the sketch through `Base` too (when the linked object IS a
+  // sketch) and emit the re-placing cad.place.
+  it('re-orients Part::Extrusion results by a rotated sketch Placement (Base link)', () => {
+    const sketch = simpleObj('Sketcher::SketchObject', 'Sketch199', {});
+    sketch.properties.set('Placement', {
+      name: 'Placement', type: 'App::PropertyPlacement', tagName: 'Property',
+      children: [{
+        name: 'PropertyPlacement', type: '', tagName: 'PropertyPlacement',
+        children: [], valueXml: '', valueText: '',
+        attributes: { Px: '0', Py: '0', Pz: '0', Q0: '0.707106781187', Q1: '0', Q2: '0', Q3: '0.707106781187' },
+      }],
+      valueXml: '', valueText: '', attributes: {},
+    } as never);
+    const ext = simpleObj('Part::Extrusion', 'Extrude_Sketch199', {
+      Base: { value: 'Sketch199' },
+      Dir: { valueX: '0', valueY: '-10', valueZ: '0' },
+    });
+    // give Dir the PropertyVector child shape via raw attributes is not
+    // needed here — the translator reads it; this test only pins the
+    // placement wiring, so a missing Dir just falls back to [0,0,1].
+    const doc: FcstdDocument = {
+      objects: [sketch, ext],
+      typeIndex: new Map(),
+      meta: new Map(),
+    };
+    const r = generateModel(
+      doc,
+      new Map([['Sketch199', { level: 'L0' as const, loopCount: 1 }]]),
+      new Map([['Sketch199', square()]]),
+      't',
+      new Map([['Sketch199', { p: [0, 0, 0], q: [0.707106781187, 0, 0, 0.707106781187] }]]),
+    );
+    expect(r.code).toContain('cad.place(');
+    // the placed var replaces the raw extrude var for consumers
+    expect(r.code).toMatch(/Extrude_Sketch199__place/);
+  });
+
   it('renders JsExpr edge anchors verbatim for Fillet/Chamfer (M6.1)', () => {
     const fillet = withLinkSub(
       simpleObj('PartDesign::Fillet', 'Fillet', { Radius: { value: '4' } }),

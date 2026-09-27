@@ -637,6 +637,61 @@ describe('M4.6 Pad/Pocket', () => {
     }
   });
 
+  // GOTCHA (W2, 2026-09-27, Shutter "Double doors with shutters and trim"):
+  // Part::Extrusion with a rotated-sketch base. codegen emits `cad.profile`
+  // faces in the SKETCH-LOCAL frame (M8.3), but this branch fed the GLOBAL
+  // `Dir` to cad.extrude — with Sketch199 on XZ (Q=(0.7071,0,0,0.7071)) and
+  // Dir=(0,-10,0), the sweep direction lay IN the profile plane → a
+  // zero-area degenerate solid whose role classification then failed
+  // downstream (`edgeRef: adjacent face ordinal 7 has no role lineage`).
+  // Wrong usage: extrude the global dir as-is. Correct usage: rotate the
+  // global dir into the sketch frame (Rᵀ·dir) first — here (0,-10,0) global
+  // becomes (0,0,10) local (the sketch normal).
+  it('GOTCHA: Part::Extrusion rotates global Dir into a rotated sketch frame (Rᵀ)', () => {
+    const sketch = obj('Sketcher::SketchObject', 'Sketch199', [
+      prop('Placement', {
+        name: 'PropertyPlacement',
+        attrs: { Px: '0', Py: '0', Pz: '0', Q0: '0.707106781187', Q1: '0', Q2: '0', Q3: '0.707106781187' },
+      }),
+    ]);
+    const ext = obj('Part::Extrusion', 'Extrude_Sketch199', [
+      prop('Base', { name: 'Link', attrs: { value: 'Sketch199' } }),
+      prop('Dir', { name: 'PropertyVector', attrs: { valueX: '0', valueY: '-10', valueZ: '0' } }),
+    ]);
+    const v = translateObject(ext, (dep) => (dep === 'Sketch199' ? 'sk199' : undefined), [sketch, ext]);
+    expect(v.kind).toBe('translated');
+    if (v.kind === 'translated') {
+      // global (0,-10,0) → sketch-local (0,0,10): extrude along the sketch
+      // normal, not within its plane. (closeTo: 0.7071² is not bit-exact.)
+      const lit = v.calls[0]!.literals![0] as number[];
+      expect(Math.abs(lit[0]!)).toBeLessThan(1e-9);
+      expect(Math.abs(lit[1]!)).toBeLessThan(1e-9);
+      expect(lit[2]!).toBeCloseTo(10, 9);
+    }
+  });
+
+  // The rotation must NOT apply to non-sketch bases (solids already live in
+  // the global frame) nor to identity-placed sketches.
+  it('keeps global Dir for non-sketch and identity-sketch Part::Extrusion bases', () => {
+    const solidBase = obj('Part::Feature', 'Slab', []);
+    const extSolid = obj('Part::Extrusion', 'Ext1', [
+      prop('Base', { name: 'Link', attrs: { value: 'Slab' } }),
+      prop('Dir', { name: 'PropertyVector', attrs: { valueX: '0', valueY: '-10', valueZ: '0' } }),
+    ]);
+    const v1 = translateObject(extSolid, (dep) => (dep === 'Slab' ? 'slab' : undefined), [solidBase, extSolid]);
+    expect(v1.kind).toBe('translated');
+    if (v1.kind === 'translated') expect(v1.calls[0]!.literals).toEqual([[0, -10, 0]]);
+
+    const idSketch = obj('Sketcher::SketchObject', 'S0', []);
+    const extId = obj('Part::Extrusion', 'Ext2', [
+      prop('Base', { name: 'Link', attrs: { value: 'S0' } }),
+      prop('Dir', { name: 'PropertyVector', attrs: { valueX: '0', valueY: '-10', valueZ: '0' } }),
+    ]);
+    const v2 = translateObject(extId, (dep) => (dep === 'S0' ? 's0' : undefined), [idSketch, extId]);
+    expect(v2.kind).toBe('translated');
+    if (v2.kind === 'translated') expect(v2.calls[0]!.literals).toEqual([[0, -10, 0]]);
+  });
+
   it('normalizes Dir and applies Reversed for new-format Part::Extrusion', () => {
     const ext = obj('Part::Extrusion', 'Ext', [
       prop('Base', { name: 'Link', attrs: { value: 'Sketch' } }),
