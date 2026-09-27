@@ -274,6 +274,43 @@ function propStr(obj: FcstdObject, name: string): string | undefined {
 }
 
 /**
+ * First `<Sub value="...">` of a LinkSub property, or undefined.
+ *
+ * GOTCHA (2026-09-27, W1 revolve REVOLVE_FAILED): `ReferenceAxis` is an
+ * `App::PropertyLinkSub` — `value="Sketch075"` names the linked OBJECT and the
+ * referenced geometry (`H_Axis` / `V_Axis` / an edge id) lives in a child
+ * `<Sub>` element. `propStr` only reads the `value` attribute, so it returned
+ * `"Sketch075"`, which `parseReferenceAxis` matched against no standard axis
+ * and silently fell back to the +Z default — revolving an XY-plane profile
+ * about an in-plane Z axis degenerates and OCCT fails with REVOLVE_FAILED.
+ */
+function propLinkSubFirst(obj: FcstdObject, name: string): string | undefined {
+  return propLinkSub(obj, name)?.subs[0];
+}
+
+/**
+ * Resolve a ReferenceAxis/Direction/Axis LinkSub into an axis + pivot.
+ *
+ * Tries, in order: ① `EdgeN` against the linked sketch's geometry list
+ * ({@link resolveSketchEdgeAxis} — needs docContext); ② the standard body-axis
+ * names via {@link parseReferenceAxis} (H_Axis/V_Axis/…; also used when the
+ * property carries no <Sub> child). Returns undefined when the reference names
+ * geometry that cannot be resolved — callers bake with an explicit reason.
+ */
+function resolveAxisRef(obj: FcstdObject, name: string): { axis: [number, number, number]; at: [number, number, number] } | undefined {
+  const ls = propLinkSub(obj, name);
+  if (ls) {
+    const sub = ls.subs[0];
+    if (sub) {
+      const edge = /Edge(\d+)/i.exec(sub);
+      if (edge) return resolveSketchEdgeAxis(ls.obj, Number(edge[1]));
+      return parseReferenceAxis(sub);
+    }
+  }
+  return parseReferenceAxis(propStr(obj, name));
+}
+
+/**
  * M9.1 — Pad/Pocket `Type` enumeration (App::PropertyEnumeration, stored as
  * the string enum label OR its integer index — both seen in the corpus).
  * FreeCAD sources: Pad.h / Pocket.h TypeEnum lists (differs between the two):
@@ -424,6 +461,59 @@ export function parseReferenceAxis(ref: string | undefined): { axis: [number, nu
   if (/N_Axis/i.test(ref)) return { axis: [1, 0, 0], at }; // legacy mapping, keep stable
   // The generic "Axis" or anything else defaults to +Z (sketch normal)
   return { axis: [0, 0, 1], at };
+}
+
+/**
+ * Resolve a `EdgeN` ReferenceAxis against the linked sketch's geometry list.
+ *
+ * W1 (2026-09-27, Mannequin_mp corpus): Revolution037/Groove029 reference
+ * `Sketch069` + `Edge3` — the axis is a sketch edge (a horizontal construction
+ * line), which FreeCAD places at the sketch's in-plane coordinates. The axis
+ * must be read from the sketch's `Geometry` property (1-based EdgeN order)
+ * and transformed by the sketch's Placement into body coordinates.
+ *
+ * Only straight line segments resolve (the only edge kind the corpus uses as
+ * a revolve axis); arcs/other kinds return undefined (explicit unsupported,
+ * no silent fallback).
+ *
+ * @param sketchName - the linked sketch object name.
+ * @param edgeOrdinal - 1-based edge ordinal from the `<Sub value="EdgeN"/>`.
+ * @returns unit axis (sketch Placement applied) + axis base point, or
+ *   undefined when the sketch/edge cannot be resolved.
+ */
+function resolveSketchEdgeAxis(sketchName: string, edgeOrdinal: number): { axis: [number, number, number]; at: [number, number, number] } | undefined {
+  const sketch = docContext?.find((o) => o.name === sketchName);
+  if (!sketch || sketch.type !== 'Sketcher::SketchObject') return undefined;
+  const geomProp = sketch.properties.get('Geometry');
+  const list = geomProp?.children[0];
+  if (!list) return undefined;
+  const edges = list.children.filter((c) => c.tagName === 'Geometry');
+  const edge = edges[edgeOrdinal - 1]; // EdgeN is 1-based
+  if (!edge) return undefined;
+  const line = edge.children.find((c) => c.tagName === 'LineSegment');
+  if (!line) return undefined; // arc/other edge as axis: unsupported
+  const a = line.attributes;
+  const sx = Number(a['StartX']), sy = Number(a['StartY']);
+  const ex = Number(a['EndX']), ey = Number(a['EndY']);
+  if (![sx, sy, ex, ey].every(Number.isFinite)) return undefined;
+  const dx = ex - sx, dy = ey - sy;
+  const len = Math.hypot(dx, dy);
+  if (len <= 0) return undefined;
+  // Sketch-local direction → body coordinates via the sketch Placement
+  // (sketches here carry identity or simple placements; rotate the 2D
+  // direction by the placement quaternion, then normalize).
+  const plc = placementOf(sketch);
+  const m = quatToMatrix(plc.q);
+  const local = [dx / len, dy / len, 0];
+  const axis: [number, number, number] = [
+    m[0]! * local[0]! + m[1]! * local[1]!,
+    m[3]! * local[0]! + m[4]! * local[1]!,
+    m[6]! * local[0]! + m[7]! * local[1]!,
+  ];
+  const mag = Math.hypot(...axis);
+  if (mag <= 0) return undefined;
+  const at: [number, number, number] = [plc.p[0], plc.p[1], plc.p[2]];
+  return { axis: [axis[0]! / mag, axis[1]! / mag, axis[2]! / mag], at };
 }
 
 /**
@@ -1171,7 +1261,9 @@ export function translateObject(
       }
       const angleDeg = propNum(obj, 'Angle') ?? 360;
       const angle = (angleDeg * Math.PI) / 180;
-      const axisInfo = parseReferenceAxis(propStr(obj, 'ReferenceAxis'));
+      // ReferenceAxis is a LinkSub: the axis name (H_Axis/V_Axis/EdgeN…) is the
+      // <Sub> child, not the value attribute (which names the linked sketch).
+      const axisInfo = resolveAxisRef(obj, 'ReferenceAxis');
       if (!axisInfo) return { kind: 'baked', reason: 'revolution-edge-axis-unsupported' };
       return {
         kind: 'translated',
@@ -1197,7 +1289,7 @@ export function translateObject(
       if (!baseVar) return { kind: 'baked', reason: 'groove-missing-base' };
       const gAngleDeg = propNum(obj, 'Angle') ?? 360;
       const gAngle = (gAngleDeg * Math.PI) / 180;
-      const gAxis = parseReferenceAxis(propStr(obj, 'ReferenceAxis'));
+      const gAxis = resolveAxisRef(obj, 'ReferenceAxis');
       if (!gAxis) return { kind: 'baked', reason: 'groove-edge-axis-unsupported' };
       const grooveVar = `${out}_groove`;
       return {
@@ -1220,7 +1312,7 @@ export function translateObject(
       const originals = source ? [source] : [];
       const sourceVar = originals.length > 0 ? inputVar(originals[0]!) : undefined;
       if (!sourceVar) return { kind: 'baked', reason: 'linear-pattern-missing-source' };
-      const dirInfo = parseReferenceAxis(propStr(obj, 'Direction'));
+      const dirInfo = resolveAxisRef(obj, 'Direction');
       if (!dirInfo) return { kind: 'baked', reason: 'linear-pattern-edge-dir-unsupported' };
       const occ = Math.max(2, Math.round(propNum(obj, 'Occurrences') ?? 2));
       const length = propNum(obj, 'Length') ?? 0;
@@ -1256,7 +1348,7 @@ export function translateObject(
       const sourcePolar = propLink(obj, 'Source') ?? propLinkList(obj, 'Originals')[0];
       const sourceVar = sourcePolar ? inputVar(sourcePolar) : undefined;
       if (!sourceVar) return { kind: 'baked', reason: 'polar-pattern-missing-source' };
-      const axisInfo = parseReferenceAxis(propStr(obj, 'Axis'));
+      const axisInfo = resolveAxisRef(obj, 'Axis');
       if (!axisInfo) return { kind: 'baked', reason: 'polar-pattern-edge-axis-unsupported' };
       const occ = Math.max(2, Math.round(propNum(obj, 'Occurrences') ?? 2));
       const angle = propNum(obj, 'Angle') ?? 360;

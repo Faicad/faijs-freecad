@@ -436,6 +436,119 @@ describe('P6 Part::Revolution', () => {
   });
 });
 
+describe('W1 (2026-09-27): PartDesign::Revolution ReferenceAxis LinkSub', () => {
+  // GOTCHA (2026-09-27, Mannequin_mp corpus, 8 files REVOLVE_FAILED):
+  // `ReferenceAxis` is an `App::PropertyLinkSub` — the LINKED OBJECT is the
+  // value attribute (`value="Sketch075"`) and the referenced geometry
+  // (`H_Axis` / `V_Axis` / EdgeN) lives in a child `<Sub value="..."/>`.
+  // Reading it with propStr (value-attribute only) returned "Sketch075",
+  // which parseReferenceAxis matched against no standard axis and silently
+  // fell back to +Z — revolving an XY-plane profile about an in-plane Z axis
+  // degenerates and OCCT fails with REVOLVE_FAILED. The axis name must be
+  // read from the <Sub> child (real FCStd: Revolution040 → Sketch075 H_Axis
+  // → axis [1,0,0], not the +Z fallback).
+  it('reads H_Axis from the LinkSub <Sub> child, not the value attribute', () => {
+    const rev = obj('PartDesign::Revolution', 'Revolution040', [
+      linkSubProp('Profile', 'Sketch075', []),
+      linkSubProp('ReferenceAxis', 'Sketch075', ['H_Axis']),
+      prop('Angle', { name: 'Float', attrs: { value: '360' } }),
+    ]);
+    const v = translateObject(rev, (dep) => (dep === 'Sketch075' ? 'sk0' : undefined));
+    expect(v.kind).toBe('translated');
+    if (v.kind !== 'translated') return;
+    const p = v.calls[0]!.params as { axis: number[]; at: number[] };
+    expect(p.axis[0]).toBeCloseTo(1, 10); // H_Axis → +X, NOT the +Z fallback
+    expect(p.axis[2]).toBeCloseTo(0, 10);
+  });
+
+  it('reads V_Axis from the LinkSub <Sub> child', () => {
+    const rev = obj('PartDesign::Revolution', 'Rev', [
+      linkSubProp('Profile', 'S', []),
+      linkSubProp('ReferenceAxis', 'S', ['V_Axis']),
+      prop('Angle', { name: 'Float', attrs: { value: '180' } }),
+    ]);
+    const v = translateObject(rev, (dep) => (dep === 'S' ? 'sk0' : undefined));
+    expect(v.kind).toBe('translated');
+    if (v.kind !== 'translated') return;
+    const p = v.calls[0]!.params as { axis: number[] };
+    expect(p.axis[2]).toBeCloseTo(1, 10); // V_Axis → +Z
+  });
+
+  it('falls back to +Z only when the LinkSub carries no <Sub> child', () => {
+    const rev = obj('PartDesign::Revolution', 'Rev', [
+      linkSubProp('Profile', 'S', []),
+      linkSubProp('ReferenceAxis', 'S', []),
+      prop('Angle', { name: 'Float', attrs: { value: '360' } }),
+    ]);
+    const v = translateObject(rev, (dep) => (dep === 'S' ? 'sk0' : undefined));
+    expect(v.kind).toBe('translated');
+    if (v.kind !== 'translated') return;
+    const p = v.calls[0]!.params as { axis: number[] };
+    expect(p.axis[2]).toBeCloseTo(1, 10); // no Sub → sketch-normal +Z default
+  });
+
+  it('bakes with edge-axis reason when <Sub> names an Edge (geometry-referenced)', () => {
+    const rev = obj('PartDesign::Revolution', 'Rev', [
+      linkSubProp('Profile', 'S', []),
+      linkSubProp('ReferenceAxis', 'S', ['Edge5']),
+      prop('Angle', { name: 'Float', attrs: { value: '360' } }),
+    ]);
+    const v = translateObject(rev, (dep) => (dep === 'S' ? 'sk0' : undefined));
+    expect(v).toMatchObject({ kind: 'baked', reason: 'revolution-edge-axis-unsupported' });
+  });
+
+  it('W1b: resolves EdgeN axis from the linked sketch geometry (docContext present)', () => {
+    // Real FCStd shape (Mannequin_mp Sketch069): Edge3 is a horizontal line
+    // (124,257)→(244,257) — the revolve axis is +X in sketch coordinates,
+    // NOT the +Z default that the old propStr path silently produced.
+    const sketch = obj('Sketcher::SketchObject', 'Sketch069', [
+      prop('Placement', { name: 'PropertyPlacement', attrs: { Px: '0', Py: '0', Pz: '0', Q0: '0', Q1: '0', Q2: '0', Q3: '1' } }),
+      ['Geometry', {
+        name: 'Geometry',
+        type: 'Part::PropertyGeometryList',
+        tagName: 'Property',
+        children: [{
+          name: 'GeometryList',
+          type: '',
+          tagName: 'GeometryList',
+          attributes: { count: '4' },
+          children: [0, 1, 2].map((i) => ({
+            name: 'Geometry',
+            type: '',
+            tagName: 'Geometry',
+            attributes: { type: 'Part::GeomLineSegment' },
+            children: [{
+              name: 'LineSegment',
+              type: '',
+              tagName: 'LineSegment',
+              attributes: {
+                StartX: String(100 + i * 10), StartY: '257', StartZ: '0',
+                EndX: String(150 + i * 10), EndY: '257', EndZ: '0',
+              },
+              children: [], valueXml: '', valueText: '',
+            }],
+            valueXml: '', valueText: '',
+          })),
+        }],
+        valueText: '',
+        attributes: {},
+      } as unknown as FcstdProperty],
+    ]);
+    const rev = obj('PartDesign::Revolution', 'Revolution037', [
+      linkSubProp('Profile', 'Sketch069', []),
+      linkSubProp('ReferenceAxis', 'Sketch069', ['Edge3']),
+      prop('Angle', { name: 'Float', attrs: { value: '360' } }),
+    ]);
+    const v = translateObject(rev, (dep) => (dep === 'Sketch069' ? 'sk0' : undefined), [sketch]);
+    expect(v.kind, JSON.stringify(v)).toBe('translated');
+    if (v.kind !== 'translated') return;
+    const p = v.calls[0]!.params as { axis: number[]; at: number[] };
+    expect(p.axis[0]).toBeCloseTo(1, 10); // horizontal edge → +X
+    expect(p.axis[1]).toBeCloseTo(0, 10);
+    expect(p.axis[2]).toBeCloseTo(0, 10);
+  });
+});
+
 describe('M4.6 Pad/Pocket', () => {
   it('translates Pad over a sketch profile', () => {
     const pad = obj('PartDesign::Pad', 'Pad', [
