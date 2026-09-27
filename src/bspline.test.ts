@@ -2,10 +2,15 @@
  * P4 — B-spline sketch geometry tests (Mannequin corpus, Sketch061 et al.).
  *
  * GOTCHA: FreeCAD stores BSplineCurve poles/knots as CHILD ELEMENTS
- * (<Pole X= Y=/>, <Knot Value= Multiplicity=/>), not attributes — the counts
+ * (<Pole X= Y=/>, <Knot Value= Mult=/>), not attributes — the counts
  * (PolesCount/KnotsCount) are attributes. Reading attributes for poles
  * returns NaN, which used to cascade into `unsupported-geometry` and bake
  * 75 features across the Mannequin file (13 Revolution + 26 Groove + ...).
+ *
+ * GOTCHA 2 (2026-09-27): the knot multiplicity attribute is `Mult`, NOT
+ * `Multiplicity`. A 500-file / 3190-`<Knot>` corpus scan found `Mult`
+ * exclusively; reading the wrong name silently collapsed every knot vector to
+ * its distinct values. See the `Knot` fixtures below (they must use `Mult`).
  */
 import { describe, expect, it } from 'vitest';
 import { evalBSpline, sampleBSpline, bsplineToSegments, type BSplineCurveData } from '@faicad/faijs-sketch';
@@ -34,11 +39,46 @@ function quadBezierCtl(): BSplineCurveData {
 
 // ── bspline.ts evaluation ──
 
+/**
+ * A MULTI-SPAN cubic (5 poles, degree 3, 2 spans). The existing fixtures are
+ * all single-span (`poles.length === degree + 1`), where the last span index is
+ * `degree` — the value the old span search defaulted to — so they could not
+ * detect the right-boundary bug (see the regression test below).
+ */
+function cubicMultiSpan(): BSplineCurveData {
+  return {
+    poles: [
+      { x: 0, y: 0 },
+      { x: 1, y: 2 },
+      { x: 2, y: 3 },
+      { x: 3, y: 2 },
+      { x: 4, y: 0 },
+    ],
+    // clamped, len 9 === poles(5) + degree(3) + 1 → spans k = 3 and k = 4
+    knots: [0, 0, 0, 0, 0.5, 1, 1, 1, 1],
+    degree: 3,
+    periodic: false,
+  };
+}
+
 describe('evalBSpline (Cox–de Boor)', () => {
   it('GOTCHA: clamped spline interpolates first/last poles exactly', () => {
     const d = quadBezierCtl();
     expect(evalBSpline(d, 0)).toEqual({ x: 0, y: 0 });
     expect(evalBSpline(d, 1)).toEqual({ x: 1, y: 1 });
+  });
+
+  it('GOTCHA: right boundary of a MULTI-SPAN spline is the last pole', () => {
+    // Regression (2026-09-27): the span search tested `u < knots[i+1]`, which
+    // never matches at `u === hi`, so the loop fell through to its `k = degree`
+    // default — the FIRST span — and `evalBSpline(hi)` extrapolated off the
+    // leading control polygon (here it returned (4,-1) instead of (4,0)).
+    // `sampleBSpline` samples t = hi exactly, so every spline's proxy END
+    // jumped, line+spline chains in `extractContours` stopped closing, and
+    // 15 sketches in the Mannequin file gapped `sketch-solved-no-closed-loop`.
+    const d = cubicMultiSpan();
+    expect(evalBSpline(d, 1)).toEqual({ x: 4, y: 0 });
+    expect(evalBSpline(d, 0)).toEqual({ x: 0, y: 0 });
   });
 
   it('midpoint of a quadratic Bézier spline is the Bernstein point', () => {
@@ -74,6 +114,16 @@ describe('sampleBSpline / bsplineToSegments', () => {
     }
   });
 
+  it('multi-span spline samples end exactly on the last pole', () => {
+    // same right-boundary regression, at the sampling layer `extractContours`
+    // consumes (its spline proxy endpoints come from bsplineToSegments).
+    const d = cubicMultiSpan();
+    const pts = sampleBSpline(d, 6);
+    expect(pts[pts.length - 1]).toEqual({ x: 4, y: 0 });
+    const segs = bsplineToSegments(d, 6);
+    expect(segs[segs.length - 1]).toEqual({ x1: segs[segs.length - 1]!.x1, y1: segs[segs.length - 1]!.y1, x2: 4, y2: 0 });
+  });
+
   it('degenerate knots fall back to the control polygon (no crash)', () => {
     const d: BSplineCurveData = { poles: [{ x: 0, y: 0 }, { x: 1, y: 1 }], knots: [], degree: 3, periodic: false };
     const segs = bsplineToSegments(d);
@@ -95,7 +145,9 @@ describe('parseSketchGeometry: BSplineCurve (P4)', () => {
       [0, 0], [10, 0], [20, 5], [30, 10], [40, 5], [50, 0], [60, 0],
     ].map(([x, y]) => mkChild('Pole', { X: x, Y: y, Z: 0 }));
     const knotVals: [number, number][] = [[0, 4], [1, 1], [2, 1], [3, 4]];
-    const knots = knotVals.map(([v, m]) => mkChild('Knot', { Value: v, Multiplicity: m }));
+    // GOTCHA: the real FCStd attribute is `Mult` (see file header). Using
+    // `Multiplicity` here is what let the collapse bug ship.
+    const knots = knotVals.map(([v, m]) => mkChild('Knot', { Value: v, Mult: m }));
     const geom = mkChild('BSplineCurve', { PolesCount: 7, KnotsCount: 4, Degree: 3, IsPeriodic: 0 }, [
       ...poles,
       ...knots,
@@ -126,6 +178,23 @@ describe('parseSketchGeometry: BSplineCurve (P4)', () => {
     };
     const anchors = anchorPoints(g);
     expect(anchors).toEqual([{ x: 0, y: 0 }, { x: 1, y: 1 }]);
+  });
+
+  it('accepts the legacy `Multiplicity` attribute as a fallback', () => {
+    // `Mult` is the real FCStd name (see the test above); hand-written
+    // fixtures used `Multiplicity`, so the fallback is kept for them.
+    const poles = [[0, 0], [10, 0], [20, 5], [30, 10], [40, 5], [50, 0], [60, 0]]
+      .map(([x, y]) => mkChild('Pole', { X: x, Y: y, Z: 0 }));
+    const knots = ([[0, 4], [1, 1], [2, 1], [3, 4]] as [number, number][])
+      .map(([v, m]) => mkChild('Knot', { Value: v, Multiplicity: m }));
+    const geom = mkChild('BSplineCurve', { PolesCount: 7, KnotsCount: 4, Degree: 3, IsPeriodic: 0 }, [
+      ...poles,
+      ...knots,
+    ]);
+    const out = parseGeometryList({ tagName: 'Property', name: 'Geometry', type: 'Part::PropertyGeometryList', attributes: {}, children: [mkChild('GeometryList', {}, [mkChild('Geometry', { type: 'Part::GeomBSplineCurve' }, [geom])])] } as unknown as FcstdProperty);
+    const g = out[0]!;
+    if (g.kind !== 'bspline') throw new Error('expected bspline');
+    expect(g.knots).toEqual([0, 0, 0, 0, 1, 2, 3, 3, 3, 3]);
   });
 });
 

@@ -43,6 +43,59 @@ function num(attrs: Record<string, string>, key: string): number {
 }
 
 /**
+ * `std::bitset<32>` `geometryModeFlags` (MSB-first string) carries the
+ * Sketcher `GeometryMode` bits. FreeCAD's `SketchGeometryExtension.h`:
+ * `GeometryMode { Blocked = 0, Construction = 1 }`, so `test(1)` — bit index 1
+ * — is the Construction flag. Indexed from the right so a trimmed
+ * (leading-zero-stripped) string is still read correctly.
+ */
+function geometryModeIsConstruction(flags: string): boolean {
+  const f = flags.trim();
+  const idx = f.length - 1 - 1; // Construction = 1
+  return idx >= 0 && f[idx] === '1';
+}
+
+/**
+ * Is this sketch geometry construction (reference/helper) rather than profile?
+ *
+ * FreeCAD encodes it two ways, and BOTH must be honored or construction
+ * geometry leaks into the profile:
+ * - (a) legacy sibling `<Construction value="1"/>` (see the Fixed-window
+ *   corpus GOTCHA 2026-09-26);
+ * - (b) modern `<GeoExtensions><GeoExtension
+ *   type="Sketcher::SketchGeometryExtension" geometryModeFlags="…"
+ *   internalGeometryType="…"/></GeoExtensions>` — the DOMINANT form in the
+ *   Mannequin_mp corpus (Document.xml carries zero `<Construction>` elements
+ *   but 310 `geometryModeFlags`). `internalGeometryType != 0` marks
+ *   internal-alignment helper geometry (BSpline control/knot points, diameter
+ *   helpers), which is likewise not profile geometry.
+ *
+ * GOTCHA 2026-09-27 (fillet edgeRef): the Mannequin_mp `Sketch075` carries 6
+ * radius-1 CONSTRUCTION circles at its contour vertices. Form-(a)-only parsing
+ * left them unflagged, so they entered the revolved solid and shifted its edge
+ * ordinals — FreeCAD's `Fillet032 Base=Edge2` then resolved to a 1-adjacent-face
+ * seam edge and `cad.edgeRef` threw `E_TOPO_NOT_FOUND` ("edge 2 has 1 adjacent
+ * face(s)").
+ */
+function isConstructionGeometry(child: FcstdProperty): boolean {
+  if (child.children.some((c) => c.tagName === 'Construction' && c.attributes['value'] !== '0')) {
+    return true;
+  }
+  for (const ext of child.children) {
+    if (ext.tagName !== 'GeoExtensions') continue;
+    for (const g of ext.children) {
+      if (g.tagName !== 'GeoExtension') continue;
+      if (g.attributes['type'] !== 'Sketcher::SketchGeometryExtension') continue;
+      const itype = Number(g.attributes['internalGeometryType'] ?? '0');
+      if (Number.isFinite(itype) && itype !== 0) return true;
+      const flags = g.attributes['geometryModeFlags'];
+      if (flags !== undefined && geometryModeIsConstruction(flags)) return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Parse a sketch's `<GeometryList>` property into typed geometry elements.
  *
  * @param prop - the sketch's Geometry property.
@@ -61,8 +114,11 @@ export function parseGeometryList(prop: FcstdProperty): SketchGeom[] {
     // siblings before the actual geometry element — pick the first real
     // geometry child, and surface the Construction flag (contour.ts filters
     // reference geometry on it; merging the parse into @faicad/faijs-sketch
-    // dropped it, GOTCHA 2026-09-26).
-    const isConstruction = child.children.some((c) => c.tagName === 'Construction' && c.attributes['value'] !== '0');
+    // dropped it, GOTCHA 2026-09-26). Both the legacy `<Construction/>` sibling
+    // and the modern `geometryModeFlags`/`internalGeometryType` on
+    // `<GeoExtension>` are honored — see isConstructionGeometry (GOTCHA
+    // 2026-09-27).
+    const isConstruction = isConstructionGeometry(child);
     const inner = child.children.find(
       (c) => c.tagName !== 'Construction' && c.tagName !== 'GeoExtensions' && c.tagName !== 'UID',
     );
@@ -130,14 +186,30 @@ export function parseGeometryList(prop: FcstdProperty): SketchGeom[] {
       }
       case tag === 'BSplineCurve' || gtype.includes('GeomBSplineCurve'): {
         // P4: poles are child <Pole X= Y= Z=/> elements, knots child
-        // <Knot Value= Multiplicity=/> (attributes only carry counts).
+        // <Knot Value= Mult=/> (attributes only carry counts).
+        //
+        // GOTCHA 2026-09-27 (Mannequin_mp / whole corpus): the knot
+        // multiplicity attribute is **`Mult`**, NOT `Multiplicity`. A scan of
+        // 500 corpus files / 3190 `<Knot>` elements found `Mult` exclusively.
+        // Reading the wrong name silently collapsed every knot vector to its
+        // DISTINCT values (length ≪ poles + degree + 1), so `bspline.ts`
+        // evaluated a dimensionally-invalid knot vector: for length < degree+2
+        // it degenerated to the control polygon (endpoints happen to be the
+        // poles, so short splines *appeared* fine) and for longer splines it
+        // produced a degenerate proxy (all samples clamped to one point). The
+        // construction-geometry filter removed the radius-1 marker circles that
+        // used to mask this: line+spline chains stopped closing and every
+        // revolution/groove/pad built on such a sketch gapped as
+        // `sketch-solved-no-closed-loop`. `Multiplicity` is kept as a fallback
+        // for hand-written fixtures.
         const poles = inner.children
           .filter((c) => c.tagName === 'Pole')
           .map((c) => ({ x: num(c.attributes, 'X'), y: num(c.attributes, 'Y') }));
         const knots: number[] = [];
         for (const c of inner.children) {
           if (c.tagName !== 'Knot') continue;
-          const m = num(c.attributes, 'Multiplicity');
+          const raw = c.attributes['Mult'] ?? c.attributes['Multiplicity'];
+          const m = raw === undefined ? 1 : Number(raw);
           const v = num(c.attributes, 'Value');
           const mult = Number.isFinite(m) && m >= 1 ? m : 1;
           for (let k = 0; k < mult; k++) knots.push(v);

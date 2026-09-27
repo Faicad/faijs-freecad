@@ -55,6 +55,26 @@ const line = (attrs: Record<string, string>, construction?: '0' | '1'): FcstdPro
     el('LineSegment', attrs),
   ]);
 
+/**
+ * Modern FreeCAD encoding (Mannequin_mp corpus): no `<Construction/>` sibling —
+ * the flag lives in `<GeoExtensions><GeoExtension type="Sketcher::SketchGeometryExtension"
+ * geometryModeFlags="…" internalGeometryType="…"/></GeoExtensions>`.
+ * `geometryModeFlags` is a `std::bitset<32>` string; bit 1 = Construction.
+ */
+const circleWithExtension = (flags: string, internalType = '0'): FcstdProperty =>
+  el('Geometry', { type: 'Part::GeomCircle' }, [
+    el('GeoExtensions', { count: '2' }, [
+      el('GeoExtension', {
+        type: 'Sketcher::SketchGeometryExtension',
+        internalGeometryType: internalType,
+        geometryModeFlags: flags,
+        geometryLayer: '0',
+      }),
+      el('GeoExtension', { type: 'SketcherGui::ViewProviderSketchGeometryExtension', visualLayerId: '0' }),
+    ]),
+    el('Circle', { CenterX: '0', CenterY: '0', CenterZ: '0', Radius: '1' }),
+  ]);
+
 describe('construction geometry (GOTCHA 2026-09-26)', () => {
   it('parses <Construction value="1"/> into a construction flag per geometry', () => {
     const sk = parseSketchObject(
@@ -98,5 +118,37 @@ describe('construction geometry (GOTCHA 2026-09-26)', () => {
       { kind: 'circle', index: 0, cx: 0, cy: 0, cz: 0, radius: 5, construction: true },
     ];
     expect(extractContours(geoms).length).toBe(0);
+  });
+
+  // GOTCHA 2026-09-27 (Mannequin_mp fillet edgeRef): the corpus FCStds carry
+  // ZERO `<Construction>` elements — FreeCAD marks construction via the
+  // `geometryModeFlags` bitset (bit1) / `internalGeometryType` on the
+  // Sketcher::SketchGeometryExtension. Form-(a)-only parsing left Sketch075's 6
+  // radius-1 construction circles unflagged → they entered the revolve → edge
+  // ordinals shifted → FreeCAD `Edge2` fillet ref hit a 1-face seam edge and
+  // `cad.edgeRef` threw.
+  it('honors modern geometryModeFlags (bit1=Construction) and internalGeometryType', () => {
+    const sk = parseSketchObject(
+      geometryListProperty([
+        circleWithExtension('00000000000000000000000000000010'), // bit1 set → Construction
+        circleWithExtension('00000000000000000000000000000000'), // plain profile circle
+        circleWithExtension('00000000000000000000000000000000', '9'), // internal alignment
+        circleWithExtension('00000000000000000000000000000001'), // bit0 (Blocked) → NOT construction
+      ]),
+      undefined,
+      false,
+    );
+    expect(sk.geoms.map((g) => g.construction)).toEqual([true, false, true, false]);
+  });
+
+  it('excludes geometryModeFlags-marked construction circles from contours', () => {
+    const sk = parseSketchObject(
+      geometryListProperty([circleWithExtension('00000000000000000000000000000010')]),
+      undefined,
+      false,
+    );
+    expect(sk.geoms[0]?.construction).toBe(true);
+    // A lone construction circle must not become a self-closed contour.
+    expect(extractContours(sk.geoms).length).toBe(0);
   });
 });
