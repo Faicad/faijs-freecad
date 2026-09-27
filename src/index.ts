@@ -20,3 +20,14 @@ export { parseSketchObject, parseGeometryList, parseConstraintList, CONSTRAINT_N
 export type { ConstraintType, GeoId, GeoRef, PointPos, SketchCon, SketchGeom, ParsedSketch } from './sketch-parse.js';
 export { parseExpressionEngine } from './expressions.js';
 export type { ExpressionBinding } from './expressions.js';
+// Unified .fai.zip read API (docs/fai-zip-format.md; environment-independent).
+export {
+  readManifest,
+  listModels,
+  listModules,
+  readModule,
+  readAssetEntries,
+  openContainer,
+} from './container-read.js';
+export type { ContainerAssetEntries, OpenContainerResult } from './container-read.js';
+export type { ContainerManifest, ContainerModel } from './container.js';

@@ -16,6 +16,7 @@ import { parseDocumentXml, type FcstdDocument } from './document.js';
 import {
   buildManifest,
   initialDisposition,
+  type ContainerModel,
   type FaiMapping,
   type ObjectMappingEntry,
 } from './container.js';
@@ -43,11 +44,14 @@ const FREECAD_SHADOW_PREFIX = 'freecad/';
  * Returns `{ error }` when Document.xml is missing or unparseable.
  * @param source unpacked FCStd archive (ZIP members + metadata)
  * @param sourceFileName original FCStd file name recorded in the manifest
+ * @param models the container model list written into manifest.models
+ *   (main + one per Body — the caller injects the model scripts after this)
  * @returns the built archive or an error message
  */
 export function buildFaiZip(
   source: FcstdArchive,
   sourceFileName: string,
+  models: ContainerModel[],
 ): { result?: FaiZipResult; error?: string } {
   const xml = memberText(source, 'Document.xml');
   if (xml === undefined) return { error: 'Document.xml missing from source archive' };
@@ -109,7 +113,7 @@ export function buildFaiZip(
   // M2.4 — units: FCStd stores mm internally; faijs contract is mm. No
   // scaling is applied; manifest.units records the normalized unit (D7).
   // fflate requires Uint8Array values — strings must go through strToU8.
-  out['manifest.json'] = strToU8(JSON.stringify(buildManifest(doc, sourceFileName, readProgramVersion(doc)), null, 2));
+  out['manifest.json'] = strToU8(JSON.stringify(buildManifest(doc, sourceFileName, readProgramVersion(doc), models), null, 2));
   out['mapping.json'] = strToU8(JSON.stringify(mapping, null, 2));
 
   const zip = zipSync(out as Record<string, Uint8Array>, { level: 6 });

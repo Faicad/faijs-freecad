@@ -1,32 +1,52 @@
 /**
  * M2.1 — .fai.zip container schemas (manifest.json / mapping.json).
  *
- * Container layout (plan §2.1, 前文 A §6):
- *   manifest.json   — container manifest, entry point, units
+ * Container layout (docs/fai-zip-format.md, unified format v3):
+ *   manifest.json   — container manifest, units, models[], active
  *   mapping.json    — per-object fidelity ledger; zero silent loss (R7)
- *   model/*.fai.js  — translated model scripts
- *   assets/*.step   — baked geometry fallback set
+ *   model/*.fai.js  — translated model scripts (main + one per Body)
+ *   assets/*.brp    — baked BREP carriers
  *   freecad/*       — byte-exact shadow of the source ZIP members
  */
 import type { FcstdDocument, FcstdObject } from './document.js';
 
-/** manifest.json schema: source provenance, units and entry point for the .fai.zip container. */
-export interface FaiManifest {
-  /** container format version */
-  format: 1;
-  source: {
+/** One model in the container: entry script (+ optional data member). */
+export interface ContainerModel {
+  /** model identifier: unique in the container, stable (switch/data key) */
+  id: string;
+  /** container path of the model's entry script, inside model/ */
+  entry: string;
+  /** display name; never used as an identifier */
+  label?: string;
+  /** container path of the model's data member; absent = no data member */
+  data?: string;
+}
+
+/** manifest.json schema (unified .fai.zip format v3, docs/fai-zip-format.md §4). */
+export interface ContainerManifest {
+  /** container format identifier — MUST be 3 in this revision */
+  format: 3;
+  /** unit normalization applied to all coordinates; always "mm" */
+  units: 'mm';
+  /** complete model list (length ≥ 1) */
+  models: ContainerModel[];
+  /** id of the initially active model; absent = models[0] */
+  active?: string;
+  /** ISO 8601 timestamp. Display only */
+  createdAt?: string;
+  /** version of the producing tool. Display only */
+  appVersion?: string;
+  /** container display name. Display only */
+  label?: string;
+  /** FCStd conversion provenance. Display only */
+  source?: {
     /** original FCStd file name (not full path) */
     file: string;
     programVersion: string;
     schemaVersion: number;
   };
-  /** unit normalization applied to all coordinates (D7); always "mm" */
-  units: 'mm';
-  /** D-A: FCStd port output is BREP-chain-only (sketch/extrude/... are brep
-   * impls without mesh); execution must use `--mode brep`. */
-  requiresBrep: true;
-  /** entry script inside model/ */
-  entry: string;
+  /** the model graph requires the BREP chain (fcstd: brep-only output) */
+  requiresBrep?: boolean;
 }
 
 /**
@@ -65,15 +85,17 @@ export interface FaiMapping {
  * @param doc parsed FCStd document (SchemaVersion read from meta)
  * @param sourceFile original FCStd file name (not full path)
  * @param programVersion FreeCAD program version that wrote the document
- * @returns the manifest with format 1, mm units and the BREP-chain entry point
+ * @param models the container model list (main + one per Body, §5 Phase 3.2)
+ * @returns the manifest with format 3, mm units and the model list
  */
 export function buildManifest(
   doc: FcstdDocument,
   sourceFile: string,
   programVersion: string,
-): FaiManifest {
+  models: ContainerModel[],
+): ContainerManifest {
   return {
-    format: 1,
+    format: 3,
     source: {
       file: sourceFile,
       programVersion,
@@ -81,7 +103,7 @@ export function buildManifest(
     },
     units: 'mm',
     requiresBrep: true,
-    entry: 'model/main.fai.js',
+    models,
   };
 }
 

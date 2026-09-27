@@ -283,7 +283,15 @@ export async function convertFcstdFile(input: string, opts?: ConvertOptions): Pr
   }
 
   // M2: container with shadow, then inject model/ + updated mapping
-  const built = buildFaiZip(unpacked.value, baseName + '.FCStd');
+  const built = buildFaiZip(
+    unpacked.value,
+    baseName + '.FCStd',
+    // unified format v3: main aggregate + one model per Body (§5 Phase 3.2)
+    [
+      { id: 'main', entry: 'model/main.fai.js', label: baseName },
+      ...gen.files.map((f) => ({ id: f.body, entry: f.path, label: f.body })),
+    ],
+  );
   if (built.error || !built.result) return fail(`container build failed: ${built.error ?? 'unknown'}`);
   const members: Record<string, Uint8Array> = {};
   for (const [k, v] of Object.entries(unzipSync(built.result.zip))) members[k] = v;
