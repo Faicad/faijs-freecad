@@ -24,7 +24,8 @@ import type { LeafParam } from './params.js';
 import type { Contour, SketchGeom, SketchConstraint } from '@faicad/faijs-sketch';
 import { type Placement, isIdentityPlacement, invertApplyPlacement, planeBasis } from './placement.js';
 import { isNonModelingType } from './structural-types.js';
-import { renderDrawSession } from './draft-draw.js';
+import { renderDrawContour } from './draft-draw.js';
+import type { DraftDrawing } from './draft-draw.js';
 
 /** Per-object codegen outcome: what was emitted for one FCStd object. */
 export interface GenObjectResult {
@@ -162,7 +163,7 @@ export function generateModel(
   /** A2: canonical geoms+constraints per parameterizable sketch (cad.sketch emission). */
   sketchInputs?: ReadonlyMap<string, { geoms: SketchGeom[]; constraints: SketchConstraint[] }>,
   /** A4: rebuilt Draft drawings per Part::Part2DObjectPython (cad.draw emission). */
-  draftDrawings?: ReadonlyMap<string, { edges: { points: [number, number][]; closed: boolean }[] }>,
+  draftDrawings?: ReadonlyMap<string, DraftDrawing>,
   /** C1/C2/C4: the document's leaf parameters, emitted as top-level `const p_*`
    *  headers in the modules that reference them. */
   params?: readonly LeafParam[],
@@ -296,11 +297,10 @@ export function generateModel(
   const chainVar = new Map<string, string>(); // body name → accumulated var
   // A4: top-level local function defs (Draft drawings) — the .fai.js statement
   // language rejects arrow functions in expression position (syntax-design
-  // §2.4), but function bodies allow them (§2.3), so each rebuilt drawing is
-  // emitted as `function <fn>() { return cad.draw((pen) => …); }` plus one
-  // call statement.
+  // §2.4), but function bodies allow them (§2.3). One def + one call per
+  // CONTOUR: a `cad.draw` session is a single-run flood pen and cannot carry two
+  // disjoint loops (`movePointerTo` refuses to lift once a curve exists).
   const fnDefs = new Map<string, string>(); // fn name → def source
-  const localCall = new Map<string, string>(); // object name → local fn name
 
   for (const name of order) {
     const node = nodes.get(name)!;
@@ -395,23 +395,68 @@ export function generateModel(
       continue;
     }
 
-    // A4: Draft drawing objects with a rebuilt drawing → cad.draw (D1:
-    // drawings are the drawing PROCESS re-emitted, not a dead profile).
+    // A4: Draft drawing objects with a rebuilt drawing → `cad.draw` per contour,
+    // then `cad.sketchOnPlane` to turn the drawn contours into a Shape.
+    //
+    // Three facts force this shape (all measured 2026-09-28, see draft-draw.ts):
+    //  · One `cad.draw` session carries exactly ONE contour — `BaseSketcher2d`
+    //    refuses to lift the pen once a curve exists, and a Draft object holds
+    //    many disjoint loops (up to 61 measured). Hence one local function and
+    //    one call per contour.
+    //  · `cad.draw` yields a pure-data contour with NO OCCT handle, so it cannot
+    //    feed `cad.extrude`/`cad.sweep` directly (`E_BREP_INPUT: argument carries
+    //    no BREP handle`). The placement step is what closes that gap, and it is
+    //    exactly what the plan's A4 pipeline says happens next.
+    //  · The object's own variable must end up as a Shape, because Draft objects
+    //    are consumed like any other shape (`cad.sweep(Clone2D001, Clone2D002)`,
+    //    `cad.extrude(Clone2D005, …)`), so the placement call takes the object's
+    //    name and the contour variables stay off the object's exported identity.
+    //  · GOTCHA (Chair, 2026-09-28): the placement call MUST list the contour
+    //    variables in `inputs`. `lower()` derives the root aggregate from
+    //    `consumed = calls.flatMap(c => c.inputs)`; an empty `inputs` left every
+    //    contour variable looking unconsumed, so `assembly` swept the raw drawn
+    //    Blueprints (no BREP handle) into `cad.compound` and the product died at
+    //    `E_BREP_UNSUPPORTED: compound members are not all on the BREP chain`.
+    //    `cad.sketchOnPlane` is params-only, so `noPositionalArgs` keeps those
+    //    inputs as dependency registration (same pattern as `cad.compound`).
     const drawing = draftDrawings?.get(name);
     if (drawing && obj.type === 'Part::Part2DObjectPython') {
-      const fn = sanitizeIdent(`draw_${name}`);
-      fnDefs.set(fn, `function ${fn}() {\n  return cad.draw(${renderDrawSession(drawing)});\n}`);
-      localCall.set(name, fn);
       const v = emitVar(name);
       variables.set(name, v);
-      // The call statement is a LOCAL-FUNCTION call — lowered as
-      // `let <Name> = <fn>();` (statement form §2.3). op marker
-      // `local:<fn>` is consumed by lower()/lowerBody().
-      const drawCall: CadCall = {
-        out: v, op: `local:${fn}`, source: name, inputs: [], params: {},
+      const drawCalls: CadCall[] = [];
+      const contourVars: string[] = [];
+      for (let i = 0; i < drawing.contours.length; i++) {
+        const fn = sanitizeIdent(`draw_${name}_c${i}`);
+        const contour = drawing.contours[i]!;
+        fnDefs.set(fn, `function ${fn}() {\n  return cad.draw(${renderDrawContour(contour)});\n}`);
+        const cv = emitVar(`${name}__draw${i}`);
+        variables.set(`${name}__draw${i}`, cv);
+        contourVars.push(cv);
+        drawCalls.push({ out: cv, op: `local:${fn}`, source: `${name}[${i}]`, inputs: [], params: {} });
+      }
+      // A3 parity with the sketch path: the object's Placement becomes the lift
+      // frame. Identity → the plain XY plane (emitted explicitly so the generated
+      // source states where the drawing lands).
+      let plane: { origin: [number, number, number]; normal: [number, number, number]; xAxis: [number, number, number] } | { name: string } = { name: 'XY' };
+      const drPl = placements?.get(name);
+      if (drPl && !isIdentityPlacement(drPl)) {
+        const { u, n } = planeBasis(drPl);
+        plane = { origin: [...drPl.p], normal: n, xAxis: u };
+      }
+      const placeCall: CadCall = {
+        out: v,
+        op: 'cad.sketchOnPlane',
+        source: name,
+        inputs: [...contourVars],
+        noPositionalArgs: true,
+        params: { contours: jsExpr(`[${contourVars.join(', ')}]`), plane },
       };
-      calls.push(drawCall);
-      results.push({ name, type: obj.type, variable: v, calls: [drawCall], disposition: 'translated', reason: 'draft-draw' });
+      drawCalls.push(placeCall);
+      calls.push(...drawCalls);
+      results.push({
+        name, type: obj.type, variable: v, calls: drawCalls,
+        disposition: 'translated', reason: `draft-draw(${contourVars.length} contours)`,
+      });
       continue;
     }
 
