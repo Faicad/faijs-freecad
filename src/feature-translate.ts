@@ -1519,7 +1519,23 @@ export function translateObject(
       if (propBool(obj, 'UseAllEdges')) return { kind: 'baked', reason: 'fillet-all-edges-unsupported' };
       if (!base || base.subs.length === 0) return { kind: 'baked', reason: 'fillet-no-edges' };
       const ordinals = parseEdgeSubs(base.subs);
-      if (!ordinals) return { kind: 'baked', reason: 'fillet-non-edge-sub' };
+      // P1.4 (2026-09-28, Shopping Handle corpus): FreeCAD PartDesign fillets
+      // may select FACES (`Face57`) — "fillet every edge of this face". cad.fillet
+      // takes explicit edge ordinals and post-fillet ordinals shift, so face
+      // selection cannot be emitted faithfully. The feature still carries its
+      // frozen result Shape (.brp member): importing it as a shape-asset is an
+      // honest fact (D8), keeps downstream Base chains alive, and beats baking
+      // the whole downstream fillet stack with fillet-missing-base.
+      if (!ordinals) {
+        if (shapeCarriers?.has(obj.name)) {
+          return {
+            kind: 'translated',
+            calls: [shapeAssetCall(obj, shapeBrpFile(obj) ?? `${obj.name}.Shape.brp`)],
+            reason: 'shape-asset: fillet-non-edge-sub fallback',
+          };
+        }
+        return { kind: 'baked', reason: 'fillet-non-edge-sub' };
+      }
       const radius = propNum(obj, 'Radius');
       if (radius === undefined || !(radius > 0)) return { kind: 'baked', reason: 'fillet-bad-radius' };
       return {
@@ -1537,7 +1553,18 @@ export function translateObject(
       if (propBool(obj, 'UseAllEdges')) return { kind: 'baked', reason: 'chamfer-all-edges-unsupported' };
       if (!base || base.subs.length === 0) return { kind: 'baked', reason: 'chamfer-no-edges' };
       const ordinals = parseEdgeSubs(base.subs);
-      if (!ordinals) return { kind: 'baked', reason: 'chamfer-non-edge-sub' };
+      // P1.4 (2026-09-28): same face-selection / frozen-result fallback as the
+      // PartDesign::Fillet branch above.
+      if (!ordinals) {
+        if (shapeCarriers?.has(obj.name)) {
+          return {
+            kind: 'translated',
+            calls: [shapeAssetCall(obj, shapeBrpFile(obj) ?? `${obj.name}.Shape.brp`)],
+            reason: 'shape-asset: chamfer-non-edge-sub fallback',
+          };
+        }
+        return { kind: 'baked', reason: 'chamfer-non-edge-sub' };
+      }
       const edges = edgeRefArgs(baseVar, ordinals);
       // ChamferType enum (FeatureChamfer.cpp:55): 0 "Equal distance" (the
       // default when the property is absent, i.e. files predating it),

@@ -1339,6 +1339,39 @@ describe('M6.1 Fillet / Chamfer (edge anchors via cad.edgeRef)', () => {
     expect(translateObject(c, dep)).toMatchObject({ kind: 'baked', reason: 'chamfer-non-edge-sub' });
   });
 
+  // P1.4 GOTCHA (Shopping Handle corpus, 2026-09-28): a PartDesign
+  // Fillet/Chamfer selecting FACES (FaceN = "fillet every edge of this face")
+  // cannot be emitted (cad.fillet takes explicit edge ordinals that shift
+  // after each op), but the feature still carries its frozen result Shape.
+  // With .brp evidence it must fall back to a shape-asset import — an honest
+  // fact (D8) that keeps the downstream Base chain alive — instead of baking
+  // and cascading fillet-missing-base into every downstream fillet.
+  it('GOTCHA (P1.4): face-selected Fillet/Chamfer WITH a frozen .brp → shape-asset fallback; WITHOUT → explicit bake', () => {
+    const withBrp = (type: string, name: string): FcstdObject =>
+      obj(type, name, [
+        base('Pad001', ['Face57', 'Face1']),
+        prop('Radius', { name: 'Float', attrs: { value: '2' } }),
+        prop('Shape', { name: 'Part', attrs: { file: `${name}.Shape.brp` } }),
+      ]);
+    for (const [type, reason] of [
+      ['PartDesign::Fillet', 'shape-asset: fillet-non-edge-sub fallback'],
+      ['PartDesign::Chamfer', 'shape-asset: chamfer-non-edge-sub fallback'],
+    ] as const) {
+      const r = translateObject(withBrp(type, 'F'), dep, undefined, new Set(['F']));
+      expect(r).toMatchObject({ kind: 'translated', reason });
+      if (r.kind === 'translated') {
+        expect(r.calls[0]!.op).toBe('cad.import_brep');
+        expect(r.calls[0]!.params).toEqual({ asset: 'F.Shape' });
+      }
+    }
+    // no frozen Shape → still the explicit non-edge-sub bake
+    const bare = obj('PartDesign::Fillet', 'FilletBare', [
+      base('Pad001', ['Face1']),
+      prop('Radius', { name: 'Float', attrs: { value: '2' } }),
+    ]);
+    expect(translateObject(bare, dep)).toMatchObject({ kind: 'baked', reason: 'fillet-non-edge-sub' });
+  });
+
   it('bakes Fillet/Chamfer with an unresolved base or a bad size', () => {
     const orphan = obj('PartDesign::Fillet', 'Fillet', [
       base('Ghost', ['Edge1']),
