@@ -42,7 +42,7 @@
   ],
   "dependencies": {
     "@faicad/faijs-draw": "^0.18.3",
-    "@faicad/faijs-sketch": "^0.18.0",
+    "@faicad/faijs-sketch": "^0.19.0",
     "@xmldom/xmldom": "^0.9.8",
     "fflate": "^0.8.2"
   },
