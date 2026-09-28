@@ -973,4 +973,46 @@ describe('M5 codegen', () => {
       expect(o.reason).toBe('cut-missing-dependency');
     }
   });
+
+  // P1.3 GOTCHA (Winch-Model1-Cable-Guide, 2026-09-28): Body-less PartDesign
+  // files serialize "implied by feature order" as an EMPTY BaseFeature link
+  // (`<Link value=""/>`). propLink → undefined → BODY_CHAIN_BASE marker; with
+  // no Body container there was never a chain head, so the H7 guard baked
+  // EVERY loose Pocket (7/7 in winch). A translated loose feature must become
+  // the implicit chain head for the next one (document order = FreeCAD's
+  // implied ordering); only a marker BEFORE any loose feature is headless.
+  it('chains Body-less PartDesign features via the implicit loose-chain head instead of baking them', () => {
+    const doc: FcstdDocument = {
+      objects: [
+        simpleObj('Sketcher::SketchObject', 'Sketch', {}),
+        simpleObj('PartDesign::Pad', 'Pad', { Profile: { value: 'Sketch' } }),
+        simpleObj('Sketcher::SketchObject', 'Sketch001', {}),
+        // empty BaseFeature link value = implied base (FreeCAD 0.20+)
+        simpleObj('PartDesign::Pocket', 'Pocket', { Profile: { value: 'Sketch001' } }),
+      ],
+      typeIndex: new Map(),
+      meta: new Map(),
+    };
+    const square = () => [{
+      closed: true,
+      segments: [
+        { kind: 'line', x1: 0, y1: 0, x2: 10, y2: 0 },
+        { kind: 'line', x1: 10, y1: 0, x2: 10, y2: 10 },
+        { kind: 'line', x1: 10, y1: 10, x2: 0, y2: 10 },
+        { kind: 'line', x1: 0, y1: 10, x2: 0, y2: 0 },
+      ],
+    }] as never;
+    const contours = new Map([['Sketch', square()], ['Sketch001', square()]]);
+    const geoms = [{ kind: 'line' as const, x1: 0, y1: 0, x2: 40, y2: 0 }];
+    const inputs = new Map([['Sketch', { geoms, constraints: [] }], ['Sketch001', { geoms, constraints: [] }]]);
+    const r = generateModel(doc, new Map(), contours, 't', undefined, undefined, undefined, undefined, undefined, inputs);
+    const pad = r.objects.find((o) => o.name === 'Pad');
+    const pocket = r.objects.find((o) => o.name === 'Pocket');
+    expect(pad).toMatchObject({ disposition: 'translated' });
+    // the Pocket resolved its base from the implicit chain head — no bake
+    expect(pocket).toMatchObject({ disposition: 'translated' });
+    expect(r.calls.some((c) => c.op === 'cad.subtract' && c.inputs.length === 2)).toBe(true);
+    // the generated code must not leak the marker as an identifier
+    expect(r.code).not.toContain('::body-chain-base::');
+  });
 });

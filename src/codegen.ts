@@ -295,6 +295,17 @@ export function generateModel(
     }
   }
   const chainVar = new Map<string, string>(); // body name → accumulated var
+  // P1.3 (2026-09-28, Winch-Model1-Cable-Guide): Body-less PartDesign files
+  // chain their features with an EMPTY BaseFeature link (`<Link value=""/>` —
+  // FreeCAD 0.20+ serializes "implied by feature order" this way). propLink
+  // returns undefined → the translator emits BODY_CHAIN_BASE, and the H7 guard
+  // below used to bake EVERY such pocket because no Body container ever
+  // creates a chain head. Track an implicit loose-chain head instead: the last
+  // translated loose PartDesign feature's output, in document order — exactly
+  // FreeCAD's implied ordering. Retargeting the marker at it keeps the
+  // subtract chain alive without a Body. The H7 guard remains for the
+  // genuinely headless case (marker present before any loose feature built).
+  let looseChainHead: string | undefined;
   // A4: top-level local function defs (Draft drawings) — the .fai.js statement
   // language rejects arrow functions in expression position (syntax-design
   // §2.4), but function bodies allow them (§2.3). One def + one call per
@@ -704,6 +715,18 @@ export function generateModel(
           chainVar.set(body, nv);
         }
       }
+      // P1.3 (2026-09-28, Winch-Model1-Cable-Guide): retarget BODY_CHAIN_BASE
+      // at the loose chain head BEFORE the H7 guard — a Body-less PartDesign
+      // file chains features implicitly (empty BaseFeature link), and FreeCAD's
+      // implied ordering is document order, which is exactly the order this
+      // loop processes loose features in.
+      const hasMarker = verdict.calls.some((c) => c.inputs?.includes(BODY_CHAIN_BASE));
+      if (hasMarker && looseChainHead !== undefined && !memberToBody.has(name)) {
+        const head: string = looseChainHead;
+        for (const c of verdict.calls) {
+          if (c.inputs) c.inputs = c.inputs.map((i) => (i === BODY_CHAIN_BASE ? head : i));
+        }
+      }
       // H7 guard (motor_mount_inch corpus): a feature outside a Body (or with
       // no chain head yet) never gets its BODY_CHAIN_BASE retargeted — the
       // marker would leak into the generated JS as an illegal identifier
@@ -713,6 +736,12 @@ export function generateModel(
         continue;
       }
       results.push({ name, type: obj.type, variable: verdict.calls.at(-1)?.out, calls: verdict.calls, disposition: 'translated', reason: verdict.reason });
+      // P1.3: a translated loose PartDesign feature becomes the implicit chain
+      // head for the next loose feature (document order = FreeCAD's implied
+      // ordering). Body members keep their own chainVar discipline above.
+      if (!memberToBody.has(name) && verdict.calls.length > 0) {
+        looseChainHead = verdict.calls.at(-1)!.out;
+      }
     } else if (verdict.kind === 'baked') {
       results.push({ name, type: obj.type, calls: [], disposition: 'baked', reason: verdict.reason });
     } else {
