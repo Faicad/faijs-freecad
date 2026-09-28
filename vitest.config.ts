@@ -8,6 +8,7 @@ export default defineConfig({
       // The sketch library is more specific than core, so its aliases come first.
       { find: '@faicad/faijs-sketch/node', replacement: new URL('../sketch/src/node.ts', import.meta.url).pathname },
       { find: '@faicad/faijs-sketch', replacement: new URL('../sketch/src', import.meta.url).pathname },
+      { find: '@faicad/faijs-draw', replacement: new URL('../draw/src', import.meta.url).pathname },
       { find: '@faicad/faijs', replacement: new URL('../core/src', import.meta.url).pathname },
     ],
   },

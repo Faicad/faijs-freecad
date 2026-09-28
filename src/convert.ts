@@ -25,6 +25,8 @@ import { extractContours } from '@faicad/faijs-sketch';
 import type { Contour } from '@faicad/faijs-sketch';
 import { fromFreeCadGeoms, fromFreeCadConstraints } from '@faicad/faijs-sketch';
 import type { SketchGeom, SketchConstraint } from '@faicad/faijs-sketch';
+import { isDraft2DObject, extractDraftDrawing } from './draft-draw.js';
+import type { DraftDrawing } from './draft-draw.js';
 import { generateModel } from './codegen.js';
 import type { Placement } from './placement.js';
 import { effectivePlacement } from './attachment.js';
@@ -220,6 +222,21 @@ export async function convertFcstdFile(input: string, opts?: ConvertOptions): Pr
     }
   }
 
+  // A4: rebuild Draft drawing objects (`Part::Part2DObjectPython`) from their
+  // frozen Shape .brp wireframes — the drawing process is re-emitted as a
+  // `cad.draw` pen chain (D1: drawings → cad.draw, not profile/baked).
+  const draftDrawings = new Map<string, DraftDrawing>();
+  for (const obj of doc.value.objects) {
+    if (!isDraft2DObject(obj)) continue;
+    if (!obj.properties.get('Shape')?.children[0]?.attributes['file']) continue; // no frozen shape → not drawable
+    try {
+      const d = await extractDraftDrawing(obj, unpacked.value);
+      if (d) draftDrawings.set(obj.name, d);
+    } catch {
+      // leave unbuilt — the object falls through to its previous handling
+    }
+  }
+
   // M4/M5: translate + codegen
   // H3: attachment-resolved placements — an attached sketch's stored Placement
   // is recomputed by FreeCAD from Support ∘ AttachmentOffset; resolve the chain
@@ -296,7 +313,7 @@ export async function convertFcstdFile(input: string, opts?: ConvertOptions): Pr
     }
     gen = generateModel(
       doc.value, sketchVerdict, sketchContours, baseName, placements, shapeCarriers,
-      brokenShapeAssets, filletEdgesData, prePlacedAssets, sketchInputs,
+      brokenShapeAssets, filletEdgesData, prePlacedAssets, sketchInputs, draftDrawings,
     );
   } catch (e) {
     return fail(`codegen failed: ${(e as Error).message}`);
