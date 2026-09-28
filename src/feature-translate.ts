@@ -14,6 +14,7 @@ import { parseExpressionEngine, evalWithDoc, evalWithDocExpr, type ExpressionBin
 import type { ParamTable } from './params.js';
 import { isIdentityPlacement, placementOf, quatToMatrix } from './placement.js';
 import { shapeBrpFile } from './external-geo.js';
+import { isNonModelingType } from './structural-types.js';
 import type { FilletEdgeEntry } from './fillet-edges.js';
 
 /**
@@ -818,7 +819,23 @@ export function translateObject(
         const v = link.attributes['value'];
         if (v) members.push(v);
       }
-      const vars = members.map((m) => inputVar(m));
+      // C5 (2026-09-28, FCBL_curtain / FCBL_bed_double / FCBL_nightstand):
+      // a `Part::Compound` Links list routinely contains NON-MODELING objects —
+      // the FCBL family lists `App::VarSet` (a parameter container the Extrudes
+      // read their expressions from) FIRST. FreeCAD's Part::Compound ignores
+      // members without a Shape, but requiring all links to resolve a geometry
+      // variable gapped the whole file. Skip members whose TYPE is non-modeling;
+      // the predicate is the one shared with codegen's pre-translation
+      // short-circuit and the C4 audit (structural-types.ts), so a member can
+      // never be dropped here yet emitted as a modeling feature elsewhere.
+      // A member absent from `docObjects` (translator called without the
+      // document, as in unit tests) stays REQUIRED — never drop on ignorance.
+      const objectsByName = new Map((docObjects ?? []).map((o) => [o.name, o]));
+      const geometryMembers = members.filter((m) => {
+        const member = objectsByName.get(m);
+        return member ? !isNonModelingType(member.type) : true;
+      });
+      const vars = geometryMembers.map((m) => inputVar(m));
       if (vars.length === 0 || vars.some((v) => v === undefined)) {
         return { kind: 'baked', reason: 'compound-missing-members' };
       }

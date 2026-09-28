@@ -201,6 +201,48 @@ describe('M13 whitelist extensions', () => {
     if (v.kind === 'baked') expect(v.reason).toBe('compound-missing-members');
   });
 
+  // C5 (2026-09-28): FreeCAD's Part::Compound ignores members that carry no
+  // Shape, but the translator required EVERY link to resolve a geometry
+  // variable. The FCBL family lists the document's `App::VarSet` (a parameter
+  // container) as the FIRST link, so `FCBL_curtain` / `FCBL_bed_double` /
+  // `FCBL_nightstand_wall_hung` gapped with `compound-missing-members` even
+  // though every Extrusion member resolved.
+  it('Part::Compound skips non-modeling Links (App::VarSet) and keeps the geometry members', () => {
+    const c = withLinkList('Part::Compound', 'C', 'Links', ['VarSet', 'Extrude']);
+    const doc = [obj('App::VarSet', 'VarSet', {}), obj('Part::Extrusion', 'Extrude', {})];
+    const v = translateObject(c, (d) => (d === 'Extrude' ? 'Extrude' : undefined), doc);
+    expect(v.kind).toBe('translated');
+    if (v.kind !== 'translated') return;
+    expect(v.calls[0]!.op).toBe('cad.compound');
+    expect(v.calls[0]!.inputs).toEqual(['Extrude']);
+  });
+
+  it('Part::Compound whose Links are ALL non-modeling → still bakes (no empty compound)', () => {
+    const c = withLinkList('Part::Compound', 'C', 'Links', ['VarSet', 'Sheet']);
+    const doc = [obj('App::VarSet', 'VarSet', {}), obj('Spreadsheet::Sheet', 'Sheet', {})];
+    const v = translateObject(c, () => undefined, doc);
+    expect(v.kind).toBe('baked');
+    if (v.kind === 'baked') expect(v.reason).toBe('compound-missing-members');
+  });
+
+  it('Part::Compound must NOT drop an unresolved GEOMETRY member', () => {
+    // The skip is by TYPE only. A modeling-typed link whose variable failed to
+    // materialize is a real missing dependency — dropping it would silently
+    // emit a compound of the wrong members.
+    const c = withLinkList('Part::Compound', 'C', 'Links', ['VarSet', 'Pad']);
+    const doc = [obj('App::VarSet', 'VarSet', {}), obj('PartDesign::Pad', 'Pad', {})];
+    const v = translateObject(c, () => undefined, doc);
+    expect(v.kind).toBe('baked');
+    if (v.kind === 'baked') expect(v.reason).toBe('compound-missing-members');
+  });
+
+  it('Part::Compound without docObjects keeps requiring every member (conservative default)', () => {
+    const c = withLinkList('Part::Compound', 'C', 'Links', ['VarSet', 'Extrude']);
+    const v = translateObject(c, (d) => (d === 'Extrude' ? 'Extrude' : undefined));
+    expect(v.kind).toBe('baked');
+    if (v.kind === 'baked') expect(v.reason).toBe('compound-missing-members');
+  });
+
   it('Part::Sphere with Radius → cad.sphere at Placement', () => {
     const s = obj('Part::Sphere', 'S', { Radius: 12 });
     const v = translateObject(s, () => undefined);
