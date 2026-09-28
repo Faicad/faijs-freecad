@@ -7,6 +7,16 @@ import { convertFcstdFile } from './convert.js';
 import { openContainer } from './container-read.js';
 import { cliRun } from '@faicad/faijs/node';
 import { createApiNamespace } from '@faicad/faijs';
+// A2 (2026-09-28): converted models now emit `cad.sketch` (parametric
+// sketches) — the run host must merge the sketch library into the cad
+// namespace and install the planegcs solver, exactly as a real host would.
+import { mergeSketchNamespace, installSketchSolver } from '@faicad/faijs-sketch';
+import { createNodePlanegcsSolver } from '@faicad/faijs-sketch/node';
+
+// A2: install once for the whole suite — every cliRun below inherits the
+// solver through the module-level install.
+installSketchSolver(createNodePlanegcsSolver);
+const CAD_NS = mergeSketchNamespace(createApiNamespace());
 
 /**
  * P2/P3 — unified container acceptance (2026-09-27, format v3).
@@ -71,7 +81,7 @@ describe.skipIf(!sampleAvailable)('unified .fai.zip openContainer acceptance (fo
       }
       const script = join(scratch, m.entry);
       const outStep = join(scratch, 'out.step');
-      const run = await cliRun(script, outStep, { mode: 'brep', assetsDir, projectRoot: scratch, libs: { cad: createApiNamespace() } });
+      const run = await cliRun(script, outStep, { mode: 'brep', assetsDir, projectRoot: scratch, libs: { cad: CAD_NS } });
       expect(run.ok, `model "${m.id}" (${m.entry}) failed: ${JSON.stringify((run as { error?: unknown }).error ?? '')}`).toBe(true);
       // 单终端 → out.step；多终端 → out.step_<i>_<name>.step；两者任一存在且非空即可
       const stepFiles = readdirSync(scratch).filter((f) => f.endsWith('.step'));
@@ -104,7 +114,7 @@ describe.skipIf(!sampleAvailable)('unified .fai.zip openContainer acceptance (fo
     const broken = join(scratch, 'broken.fai.js');
     writeFileSync(broken, `let ghost = cad.import_brep({ asset: "no-such-asset" });\n`);
     const outStep = join(scratch, 'out.step');
-    const run = await cliRun(broken, outStep, { mode: 'brep', assetsDir, projectRoot: scratch, libs: { cad: createApiNamespace() } });
+    const run = await cliRun(broken, outStep, { mode: 'brep', assetsDir, projectRoot: scratch, libs: { cad: CAD_NS } });
     expect(run.ok, 'missing asset must surface as an execution error').toBe(false);
     expect(JSON.stringify((run as { error?: unknown }).error ?? '')).toMatch(/no-such-asset|asset/i);
   });

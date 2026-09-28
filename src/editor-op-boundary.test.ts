@@ -1,8 +1,13 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { SYMBOL_TABLE } from '@faicad/faijs/symbol-table';
+import { SYMBOL_TABLE, symbolTableNames } from '@faicad/faijs/symbol-table';
+// A2 (2026-09-28): the lowering now emits `cad.sketch` (parametric sketch
+// translation). Its symbols live in the sketch library and join SYMBOL_TABLE
+// only when a host registers them — register here so the boundary guard sees
+// the same namespace a real run host has.
+import { registerSketchSymbols, unregisterSketchSymbols } from '@faicad/faijs-sketch';
 
 /**
  * Editor-owned op boundary guard (2026-09-21) — see
@@ -97,6 +102,9 @@ function loweringCallees(): string[] {
 }
 
 describe('editor-owned op boundary', () => {
+  registerSketchSymbols();
+  afterAll(() => unregisterSketchSymbols());
+
   it('every editor-owned op still carries @deprecated in its source JSDoc', () => {
     for (const [op, file] of Object.entries(EDITOR_OWNED)) {
       const text = read(file);
@@ -125,7 +133,12 @@ describe('editor-owned op boundary', () => {
   // running anything: a name the lowering emits must be a name the namespace
   // has.
   it('every callee the fcstd lowering emits exists in the cad namespace', () => {
-    const known = new Set(Object.keys(SYMBOL_TABLE));
+    // GOTCHA (A2, 2026-09-28): `Object.keys(SYMBOL_TABLE)` sees only the
+    // GENERATED platform table — library ops registered via
+    // registerSymbolTableEntries (e.g. `sketch` from @faicad/faijs-sketch)
+    // live in a separate extension map. Use symbolTableNames(), the union
+    // view, or every library op the lowering emits is a false unknown.
+    const known = new Set(symbolTableNames());
     const unknown = [...new Set(loweringCallees())].filter((n) => !known.has(n));
     expect(unknown).toEqual([]);
   });

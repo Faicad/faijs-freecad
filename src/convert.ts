@@ -23,6 +23,8 @@ import { classifySketch } from '@faicad/faijs-sketch';
 import { resolveExternalGeometry } from './external-geo.js';
 import { extractContours } from '@faicad/faijs-sketch';
 import type { Contour } from '@faicad/faijs-sketch';
+import { fromFreeCadGeoms, fromFreeCadConstraints } from '@faicad/faijs-sketch';
+import type { SketchGeom, SketchConstraint } from '@faicad/faijs-sketch';
 import { generateModel } from './codegen.js';
 import type { Placement } from './placement.js';
 import { effectivePlacement } from './attachment.js';
@@ -145,6 +147,10 @@ export async function convertFcstdFile(input: string, opts?: ConvertOptions): Pr
   const solver = await createNodePlanegcsSolver();
   const sketchVerdict = new Map<string, { level: 'L0' | 'L1' | 'L2'; reason?: string; loopCount?: number }>();
   const sketchContours = new Map<string, Contour[]>();
+  // A2 (2026-09-28 plan): canonical geoms+constraints per parameterizable sketch —
+  // the convert-time solve is now only a FIDELITY PRECHECK; the emitted
+  // `cad.sketch` re-solves at run time (D2 decision (b)).
+  const sketchInputs = new Map<string, { geoms: SketchGeom[]; constraints: SketchConstraint[] }>();
   for (const obj of doc.value.objects) {
     if (obj.type !== 'Sketcher::SketchObject') continue;
     const sk = parseSketchObject(obj.properties.get('Geometry'), obj.properties.get('Constraints'), false);
@@ -195,6 +201,20 @@ export async function convertFcstdFile(input: string, opts?: ConvertOptions): Pr
       const contours = verdict.level === 'L0' ? extractContours(r.value.geoms) : [];
       sketchVerdict.set(obj.name, { ...verdict, loopCount: contours.length });
       if (verdict.level === 'L0') sketchContours.set(obj.name, contours);
+      // D2 (b): non-failed outcomes keep the parametric translation — the
+      // convert-time solve above stays only as the fidelity precheck; the
+      // emitted `cad.sketch` re-solves at run time. GOTCHA: FcstdSolveOutcome
+      // has no `status` field (that is the canonical SolveOutcome) — failed is
+      // `!converged && reason === 'failed'`; conflicting/redundant stay
+      // parametric per D2.
+      const solveFailed = !r.value.converged && r.value.reason === 'failed';
+      if (!solveFailed) {
+        const geoms = fromFreeCadGeoms(sk.geoms);
+        sketchInputs.set(obj.name, {
+          geoms,
+          constraints: fromFreeCadConstraints(sk.constraints, geoms).constraints,
+        });
+      }
     } catch (e) {
       sketchVerdict.set(obj.name, { level: 'L2', reason: `solver-throw: ${(e as Error).message.slice(0, 60)}` });
     }
@@ -276,7 +296,7 @@ export async function convertFcstdFile(input: string, opts?: ConvertOptions): Pr
     }
     gen = generateModel(
       doc.value, sketchVerdict, sketchContours, baseName, placements, shapeCarriers,
-      brokenShapeAssets, filletEdgesData, prePlacedAssets,
+      brokenShapeAssets, filletEdgesData, prePlacedAssets, sketchInputs,
     );
   } catch (e) {
     return fail(`codegen failed: ${(e as Error).message}`);

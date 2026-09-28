@@ -104,6 +104,47 @@ describe('M5 codegen', () => {
     expect(origin).toMatchObject({ disposition: 'preserved-only' });
   });
 
+  // A2 (2026-09-28 plan, D2 (b)): when the convert-time precheck produced
+  // canonical inputs (solve status !== failed), the sketch emits a PARAMETRIC
+  // `cad.sketch({ geoms, constraints })` — geometry AND constraints travel
+  // into the .fai.js and the run-time op re-solves. The old
+  // solved-contour → cad.profile emission is the A5 fallback only.
+  it('emits parametric cad.sketch (geoms + constraints) when sketch inputs are provided', () => {
+    const doc: FcstdDocument = {
+      objects: [
+        simpleObj('Sketcher::SketchObject', 'Sketch', {}),
+        simpleObj('PartDesign::Pad', 'Pad', { Profile: { value: 'Sketch' }, Length: { value: '10' } }),
+      ],
+      typeIndex: new Map(),
+      meta: new Map(),
+    };
+    const geoms = [
+      { kind: 'line' as const, x1: 0, y1: 0, x2: 40, y2: 0 },
+      { kind: 'line' as const, x1: 40, y1: 0, x2: 40, y2: 30 },
+      { kind: 'line' as const, x1: 40, y1: 30, x2: 0, y2: 30 },
+      { kind: 'line' as const, x1: 0, y1: 30, x2: 0, y2: 0 },
+    ];
+    const constraints = [
+      { kind: 'horizontal' as const, of: { index: 0 } },
+      { kind: 'vertical' as const, of: { index: 1 } },
+      { kind: 'length' as const, of: { index: 0 }, value: 40 },
+    ];
+    const inputs = new Map([['Sketch', { geoms, constraints }]]);
+    const r = generateModel(doc, new Map(), NO_CONTOURS, 't', undefined, undefined, undefined, undefined, undefined, inputs);
+    const sketch = r.objects.find((o) => o.name === 'Sketch');
+    expect(sketch).toMatchObject({ disposition: 'translated' });
+    expect(r.code).toContain('cad.sketch');
+    // constraints must survive verbatim into the generated source
+    expect(r.code).toContain('"kind":"length"');
+    expect(r.code).toContain('"value":40');
+    // no profile fallback for parameterizable sketches
+    expect(r.code).not.toContain('cad.profile');
+    // the Pad still resolves the sketch as its profile face input
+    const pad = r.objects.find((o) => o.name === 'Pad');
+    expect(pad).toMatchObject({ disposition: 'translated' });
+    expect(r.code).toContain('cad.extrude');
+  });
+
   it('bakes sketches without verdicts/contours; wires them to cad.profile when solved', () => {
     const doc: FcstdDocument = {
       objects: [

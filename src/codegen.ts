@@ -20,7 +20,7 @@ import {
   LINK_INPUT_PROPS, LINK_LIST_INPUT_PROPS,
 } from './feature-translate.js';
 import type { FilletEdgeEntry } from './fillet-edges.js';
-import type { Contour } from '@faicad/faijs-sketch';
+import type { Contour, SketchGeom, SketchConstraint } from '@faicad/faijs-sketch';
 import { type Placement, isIdentityPlacement, invertApplyPlacement } from './placement.js';
 import { isNonModelingType } from './structural-types.js';
 
@@ -153,6 +153,8 @@ export function generateModel(
    *  vs truth 1500). Derived per-object by the caller from the .brp header
    *  (`brpHasEmbeddedLocation`, unpack.ts). */
   prePlacedAssets?: ReadonlySet<string>,
+  /** A2: canonical geoms+constraints per parameterizable sketch (cad.sketch emission). */
+  sketchInputs?: ReadonlyMap<string, { geoms: SketchGeom[]; constraints: SketchConstraint[] }>,
 ): GenResult {
   const byName = new Map(doc.objects.map((o) => [o.name, o]));
   // GOTCHA (test_geomop corpus, 2026-09-20): a dependency on a Body
@@ -284,6 +286,26 @@ export function generateModel(
 
     if (obj.type === 'Sketcher::SketchObject') {
       const verdict = sketchVerdict.get(name);
+      // A2 (D2 (b)): when the convert-time precheck produced canonical inputs
+      // (solve status !== failed), emit a PARAMETRIC `cad.sketch` — geometry +
+      // constraints travel into the .fai.js and the run-time op re-solves via
+      // the same planegcs backend. The old solved-contour → `cad.profile`
+      // emission becomes the A5 fallback only.
+      const inputs = sketchInputs?.get(name);
+      if (inputs) {
+        const v = emitVar(name);
+        variables.set(name, v);
+        const sketchCall: CadCall = {
+          out: v, op: 'cad.sketch', source: name, inputs: [],
+          params: { geoms: inputs.geoms, constraints: inputs.constraints.length > 0 ? inputs.constraints : undefined },
+        };
+        calls.push(sketchCall);
+        results.push({
+          name, type: obj.type, variable: v, calls: [sketchCall], disposition: 'translated',
+          sketch: verdict,
+        });
+        continue;
+      }
       const contours = sketchContours.get(name);
       const usable =
         !!verdict &&
