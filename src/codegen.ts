@@ -343,9 +343,16 @@ export function generateModel(
         !!contours &&
         contours.length > 0;
       if (usable) {
-        // M6 wiring: emit a real `cad.profile({contours})` creator so the
-        // solved contour becomes a face variable the Pad/Pocket/Extrusion/
-        // Revolution features below can consume.
+        // A5 (2026-09-28 plan): this is now the FALLBACK branch only — the
+        // parametric cad.sketch path above handles every sketch whose
+        // convert-time precheck did not fail. Reaching here means the sketch
+        // was NOT parameterizable (no sketchInputs) yet its solved contour is
+        // usable as a dead profile — record WHY explicitly.
+        // GOTCHA (A2 semantics): verdict.level L1 (delta-exceeds-t1 /
+        // solve-failed) sketches carry a verdict.reason naming the cause; L0
+        // sketches without sketchInputs typically failed constraint
+        // projection (external refs / unsupported types) — convert.ts only
+        // fills sketchInputs when the precheck produced canonical inputs.
         const v = emitVar(name);
         variables.set(name, v);
         const sketchCall: CadCall = {
@@ -354,6 +361,7 @@ export function generateModel(
         calls.push(sketchCall);
         results.push({
           name, type: obj.type, variable: v, calls: [sketchCall], disposition: 'translated',
+          reason: verdict?.reason ? `sketch-profile-fallback: ${verdict.reason}` : 'sketch-profile-fallback',
           sketch: verdict,
         });
       } else {

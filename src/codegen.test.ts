@@ -184,6 +184,38 @@ describe('M5 codegen', () => {
     expect(r.code).not.toMatch(/cad\.place\([^)]*Sketch199/);
   });
 
+  // A5 (2026-09-28 plan): the cad.profile emission is the FALLBACK branch
+  // only — it must carry an explicit reason naming why the sketch was not
+  // parameterizable (sketch-profile-fallback[: cause]).
+  it('records an explicit reason on the cad.profile fallback branch', () => {
+    const doc: FcstdDocument = {
+      objects: [
+        simpleObj('Sketcher::SketchObject', 'Sketch', {}),
+        simpleObj('PartDesign::Pad', 'Pad', { Profile: { value: 'Sketch' }, Length: { value: '10' } }),
+      ],
+      typeIndex: new Map(),
+      meta: new Map(),
+    };
+    // L1 verdict (no sketchInputs) with a usable solved contour → fallback
+    const r = generateModel(
+      doc,
+      new Map([['Sketch', { level: 'L1' as const, loopCount: 1, reason: 'delta-exceeds-t1' }]]),
+      new Map([['Sketch', square()]]),
+      't',
+    );
+    const sketch = r.objects.find((o) => o.name === 'Sketch');
+    expect(sketch).toMatchObject({ disposition: 'translated' });
+    expect(sketch!.reason).toBe('sketch-profile-fallback: delta-exceeds-t1');
+    // verdict without a reason still gets the bare fallback marker
+    const r2 = generateModel(
+      doc,
+      new Map([['Sketch', { level: 'L1' as const, loopCount: 1 }]]),
+      new Map([['Sketch', square()]]),
+      't',
+    );
+    expect(r2.objects.find((o) => o.name === 'Sketch')!.reason).toBe('sketch-profile-fallback');
+  });
+
   it('bakes sketches without verdicts/contours; wires them to cad.profile when solved', () => {
     const doc: FcstdDocument = {
       objects: [
