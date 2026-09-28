@@ -800,7 +800,20 @@ export function translateObject(
       const h = propNum(obj, 'Height') ?? 0;
       const [x, y, z] = placementPos(obj);
       const angle = propNum(obj, 'Angle') ?? 360;
-      if (angle !== 360) return { kind: 'baked', reason: 'cylinder-partial-angle' };
+      if (angle !== 360) {
+        // P1.7 (2026-09-28, 28BYJ-48 corpus): same frozen-result fallback as
+        // the sphere branch — a partial-angle cylinder bakes with no variable
+        // and cascades cut/fuse-missing-dependency downstream. With its frozen
+        // Shape present, import it as a shape-asset (D8: honest fact).
+        if (shapeCarriers?.has(obj.name)) {
+          return {
+            kind: 'translated',
+            calls: [shapeAssetCall(obj, shapeBrpFile(obj) ?? `${obj.name}.Shape.brp`)],
+            reason: 'shape-asset: cylinder-partial-angle fallback',
+          };
+        }
+        return { kind: 'baked', reason: 'cylinder-partial-angle' };
+      }
       return {
         kind: 'translated',
         calls: [{

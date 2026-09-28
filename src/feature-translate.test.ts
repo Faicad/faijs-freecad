@@ -1426,6 +1426,31 @@ describe('M6.1 Fillet / Chamfer (edge anchors via cad.edgeRef)', () => {
     expect(translateObject(bare, dep)).toMatchObject({ kind: 'baked', reason: 'compound-missing-members' });
   });
 
+  // P1.7 GOTCHA (28BYJ-48 corpus, 2026-09-28): a partial-angle cylinder bakes
+  // with no variable and cascades cut/fuse-missing-dependency downstream. With
+  // a frozen result Shape it must fall back to a shape-asset import (D8);
+  // without one it stays an explicit bake.
+  it('GOTCHA (P1.7): partial-angle cylinder WITH a frozen .brp → shape-asset fallback; WITHOUT → explicit bake', () => {
+    const withBrp = obj('Part::Cylinder', 'Cyl', [
+      prop('Radius', { name: 'Float', attrs: { value: '2.5' } }),
+      prop('Height', { name: 'Float', attrs: { value: '6' } }),
+      prop('Angle', { name: 'Float', attrs: { value: '270' } }),
+      prop('Shape', { name: 'Part', attrs: { file: 'Cyl.Shape.brp' } }),
+    ]);
+    const r = translateObject(withBrp, dep, undefined, new Set(['Cyl']));
+    expect(r).toMatchObject({ kind: 'translated', reason: 'shape-asset: cylinder-partial-angle fallback' });
+    if (r.kind === 'translated') {
+      expect(r.calls[0]!.op).toBe('cad.import_brep');
+      expect(r.calls[0]!.params).toEqual({ asset: 'Cyl.Shape' });
+    }
+    const bare = obj('Part::Cylinder', 'CylBare', [
+      prop('Radius', { name: 'Float', attrs: { value: '2.5' } }),
+      prop('Height', { name: 'Float', attrs: { value: '6' } }),
+      prop('Angle', { name: 'Float', attrs: { value: '270' } }),
+    ]);
+    expect(translateObject(bare, dep)).toMatchObject({ kind: 'baked', reason: 'cylinder-partial-angle' });
+  });
+
   it('bakes Fillet/Chamfer with an unresolved base or a bad size', () => {
     const orphan = obj('PartDesign::Fillet', 'Fillet', [
       base('Ghost', ['Edge1']),
