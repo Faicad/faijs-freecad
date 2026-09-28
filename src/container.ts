@@ -74,10 +74,23 @@ export interface ObjectMappingEntry {
   };
 }
 
+/** One lifted leaf parameter, recorded so a UI can list what it may re-drive (C4). */
+export interface ParamMappingEntry {
+  /** emitted `const` identifier (`p_`-prefixed, deduped) */
+  name: string;
+  /** provenance: which FCStd leaf this came from, e.g. `Spreadsheet::Sheet.Alias:Data.width` */
+  source: string;
+}
+
 /** mapping.json schema: the per-object fidelity ledger (zero silent loss, V3). */
 export interface FaiMapping {
   /** one entry per <ObjectData> object */
   objects: ObjectMappingEntry[];
+  /**
+   * C1/C2/C4 (2026-09-28 plan): the lifted leaf parameters, in `const` emission
+   * order. Omitted when the document has none.
+   */
+  params?: ParamMappingEntry[];
 }
 
 /**

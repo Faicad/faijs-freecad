@@ -30,7 +30,11 @@ export interface DraftDrawing {
   edges: DraftEdge[];
 }
 
-/** True when the object is a Draft 2D drawing object (A4 target class). */
+/**
+ * True when the object is a Draft 2D drawing object (A4 target class).
+ * @param obj - the FCStd object to test.
+ * @returns true when the object is a `Part::Part2DObjectPython` drawing.
+ */
 export function isDraft2DObject(obj: FcstdObject): boolean {
   return obj.type === 'Part::Part2DObjectPython';
 }

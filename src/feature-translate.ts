@@ -10,7 +10,8 @@
  * (statements sN, variables partN). Geometry values are already mm (D7).
  */
 import type { FcstdObject } from './document.js';
-import { parseExpressionEngine, evalWithDoc, type ExpressionBinding } from './expressions.js';
+import { parseExpressionEngine, evalWithDoc, evalWithDocExpr, type ExpressionBinding } from './expressions.js';
+import type { ParamTable } from './params.js';
 import { isIdentityPlacement, placementOf, quatToMatrix } from './placement.js';
 import { shapeBrpFile } from './external-geo.js';
 import type { FilletEdgeEntry } from './fillet-edges.js';
@@ -242,6 +243,93 @@ export function expressionBindingOf(obj: FcstdObject, name: string): ExpressionB
 
 /** P1-1: translateObject 入口注入的文档对象上下文（表达式的引用解析需要全文档）。 */
 let docContext: readonly FcstdObject[] | undefined;
+
+/**
+ * C3 (2026-09-28 plan): the document's leaf-parameter table, injected by
+ * `convertFcstdFile` before codegen. Same module-context pattern as
+ * {@link docContext} — the translator is reached through `translateObject`,
+ * whose signature the whole call graph shares, so threading a second document
+ * argument through it would touch every case for no benefit.
+ */
+let paramContext: ParamTable | undefined;
+
+/**
+ * Inject the leaf-parameter table used to keep bindings symbolic (C3).
+ *
+ * @param table - the table built by `collectLeafParams`, or undefined to clear it.
+ */
+export function setParamContext(table: ParamTable | undefined): void {
+  paramContext = table;
+}
+
+/**
+ * C3: the inline parameter EXPRESSION for a bound property, e.g.
+ * `<<Data>>.width * 2` → `p_width * 2`.
+ *
+ * Only arithmetic over lifted `const p_*` leaves is expressible; every other
+ * binding returns undefined so the caller keeps its existing behaviour (the
+ * numeric bake, or an explicit bake reason when even that fails) — never a
+ * guess.
+ *
+ * @param obj - the bound FCStd object.
+ * @param name - the property name the binding drives.
+ * @returns safe JS source for the expression, or undefined when not expressible.
+ */
+function paramExprOf(obj: FcstdObject, name: string): string | undefined {
+  if (!docContext || !paramContext) return undefined;
+  const b = expressionBindingOf(obj, name);
+  if (!b) return undefined;
+  const table = paramContext;
+  return evalWithDocExpr(
+    b.expression, docContext,
+    (label, seg, sub) => table.refName(label, seg, sub),
+    obj,
+  );
+}
+
+/**
+ * C3: a scalar property that may be emitted as a parameter expression.
+ * `value` is always the convert-time number (used for parity and defaults);
+ * `expr` is set only when the property is bound to arithmetic over lifted
+ * parameters, in which case the emitted argument must stay symbolic.
+ */
+interface SymScalar {
+  value: number;
+  expr?: string;
+}
+
+/**
+ * Resolve a numeric property to a possibly-symbolic scalar (C3).
+ *
+ * GOTCHA: an UNRESOLVABLE binding must return undefined, not the stored
+ * property value. `propNum` deliberately falls back to the stored `<Float>`
+ * when the binding cannot be evaluated, and using that here would silently
+ * cancel the caller's explicit `*-expression-non-constant` bake — the pad would
+ * emit a stale length instead of reporting the gap.
+ */
+function propScalar(obj: FcstdObject, name: string): SymScalar | undefined {
+  const bound = expressionBindingOf(obj, name);
+  if (bound && bound.value === undefined) return undefined;
+  const value = propNum(obj, name);
+  if (value === undefined) return undefined;
+  const expr = paramExprOf(obj, name);
+  return expr === undefined ? { value } : { value, expr };
+}
+
+/** Symbolic `s / k` (C3 helper). */
+function symDiv(s: SymScalar, k: number): SymScalar {
+  return { value: s.value / k, expr: s.expr === undefined ? undefined : `(${s.expr}) / ${k}` };
+}
+
+/** Symbolic `-s`; normalizes `-0` to `0` so the emitted literal stays clean. */
+function symNeg(s: SymScalar): SymScalar {
+  return { value: -s.value || 0, expr: s.expr === undefined ? undefined : `-(${s.expr})` };
+}
+
+/** Render a symbolic scalar: a plain number, or a verbatim JsExpr. */
+function emitScalar(s: SymScalar): number | JsExpr {
+  return s.expr === undefined ? s.value : jsExpr(s.expr);
+}
 
 /**
  * M11.2: detect a non-constant expression binding on a property.
@@ -837,28 +925,31 @@ export function translateObject(
     }
     case 'PartDesign::Pad': {
       const profile = profileLink(obj);
-      const len = propNum(obj, 'Length') ?? 0;
+      const lenSym = propScalar(obj, 'Length');
       const reversed = propBool(obj, 'Reversed');
       const midplane = propBool(obj, 'Midplane');
       const profileVar = profile ? inputVar(profile) : undefined;
       if (!profileVar) return { kind: 'baked', reason: 'pad-missing-profile' };
       // M11.2: a non-constant expression binding (cross-object reference /
       // identifier arithmetic) leaves the length unknown — explicit bake,
-      // never estimate (plan §12).
-      if (hasNonConstantBinding(obj, 'Length')) {
+      // never estimate (plan §12). C3 (2026-09-28): a binding that resolves to
+      // arithmetic over lifted `const p_*` parameters is NOT unknown — it stays
+      // symbolic and is emitted inline (`propScalar` reports it), so only a
+      // genuinely unresolvable binding bakes here.
+      if (!lenSym && hasNonConstantBinding(obj, 'Length')) {
         return { kind: 'baked', reason: 'pad-length-expression-non-constant' };
       }
       // M9.1/M9.2: Type-driven semantics — no silent Length fallback.
       const ftype = featureTypeOf(obj, 'pad');
       if (ftype === 'TwoLengths') {
-        const len2 = propNum(obj, 'Length2') ?? 0;
+        const len2Sym = propScalar(obj, 'Length2') ?? { value: 0 };
         // TwoLengths: Length forward + Length2 backward, fused. Named
         // intermediate vars so mapping/debug can locate each segment.
         const pos = `${out}__pos`;
         const neg = `${out}__neg`;
         const calls: CadCall[] = [
-          { out: pos, op: 'cad.extrude', source: obj.name, inputs: [profileVar], literals: [[0, 0, len]], params: {} },
-          { out: neg, op: 'cad.extrude', source: obj.name, inputs: [profileVar], literals: [[0, 0, -len2]], params: {} },
+          { out: pos, op: 'cad.extrude', source: obj.name, inputs: [profileVar], literals: [[0, 0, emitScalar(lenSym ?? { value: 0 })]], params: {} },
+          { out: neg, op: 'cad.extrude', source: obj.name, inputs: [profileVar], literals: [[0, 0, emitScalar(symNeg(len2Sym))]], params: {} },
           { out, op: 'cad.union', source: obj.name, inputs: [pos, neg], params: {} },
         ];
         return { kind: 'translated', calls };
@@ -993,16 +1084,17 @@ export function translateObject(
       // normal in body-local frame); length sign encodes direction.
       if (midplane) {
         // symmetric about the sketch plane: two half-prisms fused
+        const half = symDiv(lenSym ?? { value: 0 }, 2);
         const pos = `${out}__pos`;
         const neg = `${out}__neg`;
         const calls: CadCall[] = [
-          { out: pos, op: 'cad.extrude', source: obj.name, inputs: [profileVar], literals: [[0, 0, len / 2]], params: {} },
-          { out: neg, op: 'cad.extrude', source: obj.name, inputs: [profileVar], literals: [[0, 0, -len / 2]], params: {} },
+          { out: pos, op: 'cad.extrude', source: obj.name, inputs: [profileVar], literals: [[0, 0, emitScalar(half)]], params: {} },
+          { out: neg, op: 'cad.extrude', source: obj.name, inputs: [profileVar], literals: [[0, 0, emitScalar(symNeg(half))]], params: {} },
           { out, op: 'cad.union', source: obj.name, inputs: [pos, neg], params: {} },
         ];
         return { kind: 'translated', calls };
       }
-      const signed = reversed ? -len : len;
+      const signed = emitScalar(reversed ? symNeg(lenSym ?? { value: 0 }) : (lenSym ?? { value: 0 }));
       return {
         kind: 'translated',
         calls: [{ out, op: 'cad.extrude', source: obj.name, inputs: [profileVar], literals: [[0, 0, signed]], params: {} }],
@@ -1010,7 +1102,7 @@ export function translateObject(
     }
     case 'PartDesign::Pocket': {
       const profile = profileLink(obj);
-      const len = propNum(obj, 'Length') ?? 0;
+      const lenSym = propScalar(obj, 'Length');
       const reversed = propBool(obj, 'Reversed');
       const midplane = propBool(obj, 'Midplane');
       const base = propLink(obj, 'BaseFeature');
@@ -1023,7 +1115,7 @@ export function translateObject(
       // EXPLICIT base that fails to resolve is a dependency gap.
       const baseVar = base ? inputVar(base) : BODY_CHAIN_BASE;
       if (!profileVar || !baseVar) return { kind: 'baked', reason: 'pocket-missing-dependency' };
-      if (hasNonConstantBinding(obj, 'Length')) {
+      if (!lenSym && hasNonConstantBinding(obj, 'Length')) {
         return { kind: 'baked', reason: 'pocket-length-expression-non-constant' };
       }
       // M9.1/M9.2/M9.3: Type-driven semantics — explicit bake for anything
@@ -1100,14 +1192,14 @@ export function translateObject(
       // (symmetric); ThroughAll keeps its far-beyond-extent depth.
       if (midplane) {
         const THROUGH_ALL_DEPTH = 1e6;
-        const depth = ftype === 'ThroughAll' ? THROUGH_ALL_DEPTH : len;
-        const half = depth / 2;
+        const depthSym = ftype === 'ThroughAll' ? { value: THROUGH_ALL_DEPTH } : (lenSym ?? { value: 0 });
+        const half = symDiv(depthSym, 2);
         const pos = `${out}_cut_pos`;
         const neg = `${out}_cut_neg`;
         const cutVar = `${out}_cut`;
         const calls: CadCall[] = [
-          { out: pos, op: 'cad.extrude', source: obj.name, inputs: [profileVar], literals: [[0, 0, half]], params: {} },
-          { out: neg, op: 'cad.extrude', source: obj.name, inputs: [profileVar], literals: [[0, 0, -half]], params: {} },
+          { out: pos, op: 'cad.extrude', source: obj.name, inputs: [profileVar], literals: [[0, 0, emitScalar(half)]], params: {} },
+          { out: neg, op: 'cad.extrude', source: obj.name, inputs: [profileVar], literals: [[0, 0, emitScalar(symNeg(half))]], params: {} },
           { out: cutVar, op: 'cad.union', source: obj.name, inputs: [pos, neg], params: {} },
           { out, op: 'cad.subtract', source: obj.name, inputs: [baseVar, cutVar], params: {} },
         ];
@@ -1119,8 +1211,10 @@ export function translateObject(
       // prism against the base solid, so a depth far beyond any realistic
       // base extent is safe — the subtract is exact either way.
       const THROUGH_ALL_DEPTH = 1e6;
-      const depth = ftype === 'ThroughAll' ? THROUGH_ALL_DEPTH : len;
-      const signed = reversed ? depth : -depth;
+      const depthSym = ftype === 'ThroughAll' ? { value: THROUGH_ALL_DEPTH } : (lenSym ?? { value: 0 });
+      // C3: a Length bound to lifted parameters stays symbolic; ThroughAll is a
+      // constant by construction, so only the Length branch ever carries `expr`.
+      const signed = emitScalar(reversed ? depthSym : symNeg(depthSym));
       const cutVar = `${out}_cut`;
       const calls: CadCall[] = [{
         out: cutVar, op: 'cad.extrude', source: obj.name, inputs: [profileVar], literals: [[0, 0, signed]], params: {},

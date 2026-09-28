@@ -28,6 +28,11 @@ import type { SketchGeom, SketchConstraint } from '@faicad/faijs-sketch';
 import { isDraft2DObject, extractDraftDrawing } from './draft-draw.js';
 import type { DraftDrawing } from './draft-draw.js';
 import { generateModel } from './codegen.js';
+import { collectLeafParams, sketchConstraintCandidate } from './params.js';
+import type { SketchConstraintParam } from './params.js';
+import { fcstdObjectLabel } from './expressions.js';
+import { setParamContext } from './feature-translate.js';
+import { jsExpr } from './feature-translate.js';
 import type { Placement } from './placement.js';
 import { effectivePlacement } from './attachment.js';
 import { buildFaiZip } from './build-fai-zip.js';
@@ -153,6 +158,12 @@ export async function convertFcstdFile(input: string, opts?: ConvertOptions): Pr
   // the convert-time solve is now only a FIDELITY PRECHECK; the emitted
   // `cad.sketch` re-solves at run time (D2 decision (b)).
   const sketchInputs = new Map<string, { geoms: SketchGeom[]; constraints: SketchConstraint[] }>();
+  // C2 (2026-09-28 plan): named dimensional constraints lifted to `const p_*`.
+  // The candidate list feeds the shared parameter allocator; the index list says
+  // which canonical constraint carries the parameter so its `value` can be
+  // rewritten to the parameter reference after the table exists.
+  const sketchParamCandidates: SketchConstraintParam[] = [];
+  const sketchConParamIdx = new Map<string, { idx: number; name: string }[]>();
   for (const obj of doc.value.objects) {
     if (obj.type !== 'Sketcher::SketchObject') continue;
     const sk = parseSketchObject(obj.properties.get('Geometry'), obj.properties.get('Constraints'), false);
@@ -212,10 +223,26 @@ export async function convertFcstdFile(input: string, opts?: ConvertOptions): Pr
       const solveFailed = !r.value.converged && r.value.reason === 'failed';
       if (!solveFailed) {
         const geoms = fromFreeCadGeoms(sk.geoms);
-        sketchInputs.set(obj.name, {
-          geoms,
-          constraints: fromFreeCadConstraints(sk.constraints, geoms).constraints,
-        });
+        const proj = fromFreeCadConstraints(sk.constraints, geoms);
+        sketchInputs.set(obj.name, { geoms, constraints: proj.constraints });
+        // C2: correlate every projected constraint with its FCStd source, in
+        // input order minus the unmapped indices (`unmapped` is exactly the
+        // projection's own rejection ledger, so the two can never disagree).
+        const unmapped = new Set(proj.unmapped.map((u) => u.index));
+        const label = fcstdObjectLabel(obj) ?? obj.name;
+        const lifted: { idx: number; name: string }[] = [];
+        let idx = 0;
+        for (let i = 0; i < sk.constraints.length; i++) {
+          if (unmapped.has(i)) continue;
+          const src = sk.constraints[i]!;
+          const cand = sketchConstraintCandidate(obj.name, label, src);
+          if (cand) {
+            sketchParamCandidates.push(cand);
+            lifted.push({ idx, name: cand.constraint });
+          }
+          idx++;
+        }
+        if (lifted.length > 0) sketchConParamIdx.set(obj.name, lifted);
       }
     } catch (e) {
       sketchVerdict.set(obj.name, { level: 'L2', reason: `solver-throw: ${(e as Error).message.slice(0, 60)}` });
@@ -287,6 +314,30 @@ export async function convertFcstdFile(input: string, opts?: ConvertOptions): Pr
     if (parsed) filletEdgesData.set(obj.name, parsed);
   }
 
+  // C1/C2/C4 (2026-09-28 plan): lift the document's leaf parameters BEFORE
+  // codegen — the translator must know them to keep bound properties symbolic
+  // (C3), and codegen emits them as `const p_*` headers in the modules that
+  // reference them (C1). The table is injected as a module context exactly like
+  // the existing docContext, because `translateObject`'s signature is shared by
+  // the whole call graph.
+  const paramTable = collectLeafParams(doc.value.objects, sketchParamCandidates);
+  setParamContext(paramTable);
+  // C2: rewrite each lifted sketch constraint's value to its parameter
+  // reference. The canonical type declares `value?: number`; the reference is a
+  // JsExpr that the M5 renderer emits verbatim, and the run-time `cad.sketch`
+  // re-solves with the parameter's value — the geometry is identical to the
+  // convert-time solve (the `const` default IS that value).
+  for (const [sketch, lifted] of sketchConParamIdx) {
+    const inputs = sketchInputs.get(sketch);
+    if (!inputs) continue;
+    for (const { idx, name } of lifted) {
+      const p = paramTable.refName(sketch, 'Constraints', name);
+      const c = inputs.constraints[idx];
+      if (p === undefined || c === undefined) continue;
+      (c as unknown as { value?: unknown }).value = jsExpr(p);
+    }
+  }
+
   let gen;
   try {
     // Pre-placed assets: skip cad.place ONLY when the .brp's embedded location
@@ -314,6 +365,7 @@ export async function convertFcstdFile(input: string, opts?: ConvertOptions): Pr
     gen = generateModel(
       doc.value, sketchVerdict, sketchContours, baseName, placements, shapeCarriers,
       brokenShapeAssets, filletEdgesData, prePlacedAssets, sketchInputs, draftDrawings,
+      paramTable.list,
     );
   } catch (e) {
     return fail(`codegen failed: ${(e as Error).message}`);
@@ -370,6 +422,12 @@ export async function convertFcstdFile(input: string, opts?: ConvertOptions): Pr
     members[path] = strToU8(JSON.stringify(asset, null, 2));
     const entry = mapping.objects.find((e) => e.name === obj.name);
     if (entry && !entry.artifacts.includes(path)) entry.artifacts.push(path);
+  }
+
+  // C4 (2026-09-28 plan): record every lifted leaf parameter with its source,
+  // so a UI can list the drivable parameters without parsing the generated JS.
+  if (paramTable.list.length > 0) {
+    mapping.params = paramTable.list.map((p) => ({ name: p.name, source: p.source }));
   }
 
   // C4 final check: reclassify python-opaque; everything else baked = gap

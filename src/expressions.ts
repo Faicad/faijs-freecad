@@ -60,6 +60,24 @@ export function evalConstantExpression(expr: string): ExprValue {
 import type { FcstdObject } from './document.js';
 
 /**
+ * Normalize a cell's stored content into an evaluable expression body.
+ *
+ * GOTCHA (2026-09-28, Sprocket ANSI simplex ½x¼-family files): a same-sheet
+ * reference is written with a LEADING DOT — `<Cell content="=.G3" alias="Wt"/>`
+ * means "this sheet, cell G3". Stripping only the `=` left `.G3`, the address
+ * rule then substituted it into `.(24.1)` (a syntax error), `evalArithmetic`
+ * swallowed the failure, and the alias silently resolved to nothing — so every
+ * consumer baked. The dot is stripped only when it precedes an identifier:
+ * `=.5` is the number 0.5, not a reference.
+ *
+ * @param content - the raw `content` attribute of a `<Cell>`.
+ * @returns the expression body to evaluate.
+ */
+function cellBody(content: string): string {
+  return content.replace(/^=/, '').replace(/^\.(?=[A-Za-z])/, '');
+}
+
+/**
  * 三跳解析：`<<Label>>.Alias` / `Object.Alias` → 数据源对象 → 别名单元格 → 去掉
  * 前导 `=` 后交给 evalConstantExpression。同表地址（`=B2*2` 里的 `B2`）再跳一次。
  *
@@ -75,26 +93,44 @@ export function spreadsheetAliasValue(
 ): ExprValue {
   const src = docObjects.find(
     (o) => o.type === 'Spreadsheet::Sheet' &&
-      (objectLabel(o) === label || o.name === label),
+      (fcstdObjectLabel(o) === label || o.name === label),
   );
   if (!src) return undefined;
-  // cells 属性（Spreadsheet::PropertySheet）的 <Cell address alias content/> 子元素
-  const cells = src.properties.get('cells') ?? [...src.properties.values()].find((p) =>
-    p.children.some((c) => c.tagName === 'Cell' || c.children.some((g) => g.tagName === 'Cell')),
-  );
-  if (!cells) return undefined;
-  const cell = [...cells.children].flatMap((c) => (c.tagName === 'Cell' ? [c] : c.children))
-    .find((c) => c.tagName === 'Cell' && c.attributes['alias'] === alias);
+  const cell = sheetCellElements(src).find((c) => c.attributes['alias'] === alias);
   if (!cell) return undefined;
-  const content = cell.attributes['content'] ?? '';
   // 去掉前导 =（同表地址/算术再走一次带上下文的求值，一跳深度足够语料头部）
-  return evalWithDoc(content.startsWith('=') ? content.slice(1) : content, docObjects, src);
+  return evalWithDoc(cellBody(cell.attributes['content'] ?? ''), docObjects, src);
 }
 
-/** 对象的 Label 属性（FreeCAD 引用 `<<Label>>` 用的是它，不是 name）。 */
-function objectLabel(o: FcstdObject): string | undefined {
+/**
+ * 对象的 Label 属性（FreeCAD 引用 `<<Label>>` 用的是它，不是 name）。
+ * @param o - the FCStd object to read.
+ * @returns the object's Label, or undefined when it has none.
+ */
+export function fcstdObjectLabel(o: FcstdObject): string | undefined {
   const el = o.properties.get('Label')?.children[0];
   return el?.attributes['value'] ?? (el?.valueText || undefined);
+}
+
+/**
+ * The `<Cell>` elements of a `Spreadsheet::Sheet`.
+ *
+ * GOTCHA: the cells live under the `Spreadsheet::PropertySheet` property either
+ * directly as `<Cell>` children or one level down (the corpus carries both
+ * shapes), so both levels are flattened. Exported because three call sites need
+ * the same traversal (alias lookup, address lookup, C1 parameter collection).
+ *
+ * @param obj - a `Spreadsheet::Sheet` object.
+ * @returns the sheet's cell elements (empty when the object has no cells property).
+ */
+export function sheetCellElements(obj: FcstdObject): FcstdProperty[] {
+  const cells = obj.properties.get('cells') ?? [...obj.properties.values()].find((p) =>
+    p.children.some((c) => c.tagName === 'Cell' || c.children.some((g) => g.tagName === 'Cell')),
+  );
+  if (!cells) return [];
+  return [...cells.children]
+    .flatMap((c) => (c.tagName === 'Cell' ? [c] : c.children))
+    .filter((c) => c.tagName === 'Cell');
 }
 
 /**
@@ -167,7 +203,7 @@ function docReferenceValue(
 ): ExprValue {
   const alias = spreadsheetAliasValue(docObjects, label, seg);
   if (alias !== undefined) return alias;
-  const target = docObjects.find((o) => objectLabel(o) === label || o.name === label);
+  const target = docObjects.find((o) => fcstdObjectLabel(o) === label || o.name === label);
   if (!target) return undefined;
   if (sub !== undefined && (seg === 'Constraints' || target.type === 'Sketcher::SketchObject')) {
     return sketchConstraintValue(target, sub);
@@ -175,6 +211,22 @@ function docReferenceValue(
   if (sub !== undefined) return undefined; // 更深的子路径不支持，不猜
   return objectPropertyValue(target, seg, docObjects, seen);
 }
+
+/**
+ * Reference shapes parsed out of an expression: `<<L>>.A[.B]` or `L.A[.B]`
+ * (the three-part form is B1's `Object.Constraints.<名称>`).
+ */
+const REF_RE =
+  /<<([^>]+)>>\.([A-Za-z_][A-Za-z0-9_]*)(?:\.([A-Za-z_][A-Za-z0-9_]*))?|([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)(?:\.([A-Za-z_][A-Za-z0-9_]*))?/g;
+
+/**
+ * Unit tokens — a cell value carries its own unit (`=5.9mm`); the evaluator
+ * works in the mm context, so the token is stripped before arithmetic.
+ */
+const UNIT_RE = /\b(mm|millimeter|cm|centimeter|m|meter|in|inch|"|ft|foot|deg|degree|°|rad|radian)\b/g;
+
+/** Same-sheet address (`B2`), only meaningful on a `Spreadsheet::Sheet`. */
+const ADDRESS_RE = /\b([A-Z]+[0-9]+)\b/g;
 
 /**
  * 带文档上下文的表达式求值：引用（`<<L>>.A` / `L.A` / 同表地址 `B2`）替换为
@@ -205,19 +257,16 @@ export function evalWithDoc(
   let s = expr.trim();
   // 引用替换：<<Label>>.Alias | Label.Alias | Object.Alias，以及三段式
   // Object.Constraints.<名称>（B1，2026-09-26）。
-  s = s.replace(
-    /<<([^>]+)>>\.([A-Za-z_][A-Za-z0-9_]*)(?:\.([A-Za-z_][A-Za-z0-9_]*))?|([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)(?:\.([A-Za-z_][A-Za-z0-9_]*))?/g,
-    (whole, brLabel, brSeg, brSub, plLabel, plSeg, plSub) => {
-      const label: string = brLabel ?? plLabel ?? '';
-      const seg: string = brSeg ?? plSeg ?? '';
-      const sub: string | undefined = brSub ?? plSub;
-      const v = docReferenceValue(docObjects, label, seg, sub, seen);
-      return v === undefined ? whole : `(${v})`;
-    },
-  );
+  s = s.replace(REF_RE, (whole, brLabel, brSeg, brSub, plLabel, plSeg, plSub) => {
+    const label: string = brLabel ?? plLabel ?? '';
+    const seg: string = brSeg ?? plSeg ?? '';
+    const sub: string | undefined = brSub ?? plSub;
+    const v = docReferenceValue(docObjects, label, seg, sub, seen);
+    return v === undefined ? whole : `(${v})`;
+  });
   // 同表地址（self 表内 address→alias 值，如 `B2` / `B2*2`）：仅当 self 是表
   if (self?.type === 'Spreadsheet::Sheet') {
-    s = s.replace(/\b([A-Z]+[0-9]+)\b/g, (whole, addr: string) => {
+    s = s.replace(ADDRESS_RE, (whole, addr: string) => {
       const v = spreadsheetAddressValue(self, addr, docObjects);
       return v === undefined ? whole : `(${v})`;
     });
@@ -226,8 +275,73 @@ export function evalWithDoc(
   // 的既有口径），再进纯算术；单位记号在算术前剥离（返回值跟随 mm 语境）。
   const constant = evalConstantExpression(s);
   if (constant !== undefined) return constant;
-  s = s.replace(/\b(mm|millimeter|cm|centimeter|m|meter|in|inch|"|ft|foot|deg|degree|°|rad|radian)\b/g, '');
+  s = s.replace(UNIT_RE, '');
   return evalArithmetic(s);
+}
+
+/**
+ * C3 (2026-09-28 plan) — the same reference substitution as {@link evalWithDoc},
+ * but producing the expression TEXT with each leaf reference replaced by its
+ * lifted parameter NAME instead of its value:
+ * `Pad.Length = <<Data>>.width * 2` → `p_width * 2`.
+ *
+ * Non-leaf references (a plain feature property, an untracked object) keep the
+ * numeric substitution — that is the existing behaviour and it must not
+ * regress; the point of C3 is only to keep DRIVABLE leaves symbolic.
+ *
+ * No heuristic fallback, same as the evaluator: any residue that is not a
+ * number, a parameter identifier, an operator or a parenthesis → undefined, so
+ * the caller keeps the numeric bake instead of emitting suspect code.
+ *
+ * @param expr - the raw expression text (no leading `=`).
+ * @param docObjects - the document objects references resolve against.
+ * @param paramName - reference → lifted parameter name lookup (see {@link ParamTable.refName}).
+ * @param self - the object the expression is evaluated on (enables same-sheet `B2`).
+ * @param seen - recursion-cycle guard (default empty).
+ * @returns safe JS source for the expression, or undefined when not expressible.
+ */
+export function evalWithDocExpr(
+  expr: string,
+  docObjects: readonly FcstdObject[],
+  paramName: (label: string, seg: string, sub: string | undefined) => string | undefined,
+  self?: FcstdObject,
+  seen: Set<string> = new Set(),
+): string | undefined {
+  let s = expr.trim();
+  const params: string[] = [];
+  s = s.replace(REF_RE, (whole, brLabel, brSeg, brSub, plLabel, plSeg, plSub) => {
+    const label: string = brLabel ?? plLabel ?? '';
+    const seg: string = brSeg ?? plSeg ?? '';
+    const sub: string | undefined = brSub ?? plSub;
+    const p = paramName(label, seg, sub);
+    if (p !== undefined) {
+      params.push(p);
+      return p;
+    }
+    const v = docReferenceValue(docObjects, label, seg, sub, seen);
+    return v === undefined ? whole : `(${v})`;
+  });
+  // Same-sheet addresses are never parameters (a cell address is not a lever).
+  if (self?.type === 'Spreadsheet::Sheet') {
+    s = s.replace(ADDRESS_RE, (whole, addr: string) => {
+      const v = spreadsheetAddressValue(self, addr, docObjects);
+      return v === undefined ? whole : `(${v})`;
+    });
+  }
+  // A binding with no lifted leaf has nothing to parametrise — the numeric
+  // path already covers it, and returning it here would only duplicate work.
+  if (params.length === 0) return undefined;
+  const out = s.replace(UNIT_RE, '').trim();
+  // Template every parameter occurrence to a digit, then require the residue to
+  // be pure arithmetic. This both rejects unresolved identifiers AND bounds the
+  // emitted text to a charset that cannot inject code into the generated module.
+  // (Validation runs on a COPY — `docReferenceValue` mutates the cycle-guard
+  // set, so the substitution must not be replayed for a second pass.)
+  let t = out;
+  for (const p of params) t = t.replace(new RegExp(`\\b${p}\\b`, 'g'), '1');
+  if (!/^[-+*/().\s0-9eE]+$/.test(t)) return undefined;
+  if (!/\d/.test(t)) return undefined;
+  return out;
 }
 
 /** 同表地址取值：address → 该单元格 content（递归经 evalWithDoc，一跳深度）。 */
@@ -236,13 +350,9 @@ function spreadsheetAddressValue(
   address: string,
   docObjects: readonly FcstdObject[],
 ): ExprValue {
-  const cells = sheet.properties.get('cells');
-  if (!cells) return undefined;
-  const cell = [...cells.children].flatMap((c) => (c.tagName === 'Cell' ? [c] : c.children))
-    .find((c) => c.tagName === 'Cell' && c.attributes['address'] === address);
+  const cell = sheetCellElements(sheet).find((c) => c.attributes['address'] === address);
   if (!cell) return undefined;
-  const content = cell.attributes['content'] ?? '';
-  return evalWithDoc(content.startsWith('=') ? content.slice(1) : content, docObjects, sheet);
+  return evalWithDoc(cellBody(cell.attributes['content'] ?? ''), docObjects, sheet);
 }
 
 /** 仅含数字与 + - * / ( ) 空格的算术求值；任何其它字符 → undefined。 */

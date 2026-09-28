@@ -33,6 +33,13 @@ function sheet(label: string): FcstdObject {
         { name: 'Cell', type: '', tagName: 'Cell', children: [], valueXml: '', valueText: '', attributes: { address: 'F2', content: '=5.9mm', alias: 'Wt' } },
         { name: 'Cell', type: '', tagName: 'Cell', children: [], valueXml: '', valueText: '', attributes: { address: 'B2', content: '=6.4mm', alias: 'Wc' } },
         { name: 'Cell', type: '', tagName: 'Cell', children: [], valueXml: '', valueText: '', attributes: { address: 'C2', content: '=B2*2', alias: 'Double' } },
+        // GOTCHA (2026-09-28): FreeCAD writes a SAME-SHEET reference with a
+        // leading dot — `=.F2` means "this sheet, cell F2". Real corpus sample:
+        // Sprocket / Plate Wheel simplex files alias `Wt = =.G3`.
+        { name: 'Cell', type: '', tagName: 'Cell', children: [], valueXml: '', valueText: '', attributes: { address: 'E2', content: '=.F2*2', alias: 'Rel' } },
+        // …but `=.5` is the NUMBER 0.5, not a reference — the dot must not be
+        // stripped when it precedes a digit.
+        { name: 'Cell', type: '', tagName: 'Cell', children: [], valueXml: '', valueText: '', attributes: { address: 'D2', content: '=.5', alias: 'Half' } },
       ],
     }],
     valueXml: '', valueText: '', attributes: {},
@@ -52,6 +59,17 @@ describe('P1-1: Spreadsheet alias three-hop resolution', () => {
     expect(evalWithDoc('<<Data>>.Wt + <<Data>>.Wc', DOC)).toBeCloseTo(12.3, 9);
     // 同表地址：C2 = B2*2 = 12.8
     expect(spreadsheetAliasValue(DOC, 'Data', 'Double')).toBeCloseTo(12.8, 9);
+  });
+
+  it('GOTCHA: a same-sheet reference is written with a leading dot (=.F2 ≡ F2)', () => {
+    // Before the dot was stripped this returned undefined — the address rule
+    // produced `.(5.9)`, a syntax error that evalArithmetic quietly swallowed,
+    // so every alias built on a `=.X` cell silently failed and its consumers
+    // baked (Sprocket ANSI simplex: Pad baked on `<<Data>>.Wt` = `=.G3`).
+    expect(spreadsheetAliasValue(DOC, 'Data', 'Rel')).toBeCloseTo(11.8, 9);
+    expect(evalWithDoc('<<Data>>.Rel', DOC)).toBeCloseTo(11.8, 9);
+    // the dot is only a marker in front of an identifier: `=.5` stays 0.5
+    expect(spreadsheetAliasValue(DOC, 'Data', 'Half')).toBeCloseTo(0.5, 9);
   });
 
   it('GOTCHA: unresolvable reference stays undefined (no heuristic fallback)', () => {
