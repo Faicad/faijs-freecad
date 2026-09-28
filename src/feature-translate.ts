@@ -892,7 +892,19 @@ export function translateObject(
       // `cad.mirrorJoin`.
       const src = propLink(obj, 'Source');
       const s = src ? inputVar(src) : undefined;
-      if (!s) return { kind: 'baked', reason: 'mirroring-missing-source' };
+      // P1.5 (2026-09-28): same frozen-result fallback as the pattern branches
+      // below — an unresolvable Source must not orphan the downstream chain
+      // when the mirror carries its own frozen Shape.
+      if (!s) {
+        if (shapeCarriers?.has(obj.name)) {
+          return {
+            kind: 'translated',
+            calls: [shapeAssetCall(obj, shapeBrpFile(obj) ?? `${obj.name}.Shape.brp`)],
+            reason: 'shape-asset: mirroring-missing-source fallback',
+          };
+        }
+        return { kind: 'baked', reason: 'mirroring-missing-source' };
+      }
       const base = propVecXYZ(obj, 'Base') ?? [0, 0, 0];
       const normalRaw = propVecXYZ(obj, 'Normal');
       if (!normalRaw || Math.hypot(...normalRaw) <= 0) {
@@ -1463,7 +1475,21 @@ export function translateObject(
       const source = propLink(obj, 'Source') ?? propLinkList(obj, 'Originals')[0];
       const originals = source ? [source] : [];
       const sourceVar = originals.length > 0 ? inputVar(originals[0]!) : undefined;
-      if (!sourceVar) return { kind: 'baked', reason: 'linear-pattern-missing-source' };
+      // P1.5 (2026-09-28, DIP 28 corpus): Transformed features sometimes
+      // serialize NEITHER Source NOR Originals (LinkList count=0) — the
+      // patterned feature is implied and unrecoverable from Document.xml.
+      // The pattern still carries its frozen result Shape: shape-asset
+      // fallback keeps the chain alive (D8: honest fact, no fake pattern).
+      if (!sourceVar) {
+        if (shapeCarriers?.has(obj.name)) {
+          return {
+            kind: 'translated',
+            calls: [shapeAssetCall(obj, shapeBrpFile(obj) ?? `${obj.name}.Shape.brp`)],
+            reason: 'shape-asset: linear-pattern-missing-source fallback',
+          };
+        }
+        return { kind: 'baked', reason: 'linear-pattern-missing-source' };
+      }
       const dirInfo = resolveAxisRef(obj, 'Direction');
       if (!dirInfo) return { kind: 'baked', reason: 'linear-pattern-edge-dir-unsupported' };
       const occ = Math.max(2, Math.round(propNum(obj, 'Occurrences') ?? 2));
@@ -1499,7 +1525,18 @@ export function translateObject(
     case 'PartDesign::PolarPattern': {
       const sourcePolar = propLink(obj, 'Source') ?? propLinkList(obj, 'Originals')[0];
       const sourceVar = sourcePolar ? inputVar(sourcePolar) : undefined;
-      if (!sourceVar) return { kind: 'baked', reason: 'polar-pattern-missing-source' };
+      // P1.5 (2026-09-28): same empty-Originals / frozen-result fallback as
+      // the LinearPattern branch above.
+      if (!sourceVar) {
+        if (shapeCarriers?.has(obj.name)) {
+          return {
+            kind: 'translated',
+            calls: [shapeAssetCall(obj, shapeBrpFile(obj) ?? `${obj.name}.Shape.brp`)],
+            reason: 'shape-asset: polar-pattern-missing-source fallback',
+          };
+        }
+        return { kind: 'baked', reason: 'polar-pattern-missing-source' };
+      }
       const axisInfo = resolveAxisRef(obj, 'Axis');
       if (!axisInfo) return { kind: 'baked', reason: 'polar-pattern-edge-axis-unsupported' };
       const occ = Math.max(2, Math.round(propNum(obj, 'Occurrences') ?? 2));

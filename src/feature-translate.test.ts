@@ -1372,6 +1372,37 @@ describe('M6.1 Fillet / Chamfer (edge anchors via cad.edgeRef)', () => {
     expect(translateObject(bare, dep)).toMatchObject({ kind: 'baked', reason: 'fillet-non-edge-sub' });
   });
 
+  // P1.5 GOTCHA (DIP 28 corpus, 2026-09-28): Transformed features
+  // (LinearPattern/PolarPattern/Part::Mirroring) sometimes serialize NEITHER
+  // Source NOR Originals (LinkList count=0) — the patterned feature is implied
+  // and unrecoverable from Document.xml. With a frozen result Shape the
+  // feature must fall back to a shape-asset import (honest fact, D8) instead
+  // of baking and cascading *-missing-source into the chain.
+  it('GOTCHA (P1.5): pattern/mirror with NO source but a frozen .brp → shape-asset fallback; WITHOUT → explicit bake', () => {
+    const linear = obj('PartDesign::LinearPattern', 'LinearPattern', [
+      prop('Originals', { name: 'LinkList', attrs: {} }),
+      prop('Shape', { name: 'Part', attrs: { file: 'LinearPattern.Shape.brp' } }),
+    ]);
+    const rLin = translateObject(linear, dep, undefined, new Set(['LinearPattern']));
+    expect(rLin).toMatchObject({ kind: 'translated', reason: 'shape-asset: linear-pattern-missing-source fallback' });
+    const polar = obj('PartDesign::PolarPattern', 'PolarPattern', [
+      prop('Originals', { name: 'LinkList', attrs: {} }),
+      prop('Shape', { name: 'Part', attrs: { file: 'PolarPattern.Shape.brp' } }),
+    ]);
+    const rPol = translateObject(polar, dep, undefined, new Set(['PolarPattern']));
+    expect(rPol).toMatchObject({ kind: 'translated', reason: 'shape-asset: polar-pattern-missing-source fallback' });
+    const mirror = obj('Part::Mirroring', 'Mirror', [
+      prop('Shape', { name: 'Part', attrs: { file: 'Mirror.Shape.brp' } }),
+    ]);
+    const rMir = translateObject(mirror, dep, undefined, new Set(['Mirror']));
+    expect(rMir).toMatchObject({ kind: 'translated', reason: 'shape-asset: mirroring-missing-source fallback' });
+    // no frozen Shape → still the explicit missing-source bake
+    const bare = obj('PartDesign::LinearPattern', 'LPBare', [
+      prop('Originals', { name: 'LinkList', attrs: {} }),
+    ]);
+    expect(translateObject(bare, dep)).toMatchObject({ kind: 'baked', reason: 'linear-pattern-missing-source' });
+  });
+
   it('bakes Fillet/Chamfer with an unresolved base or a bad size', () => {
     const orphan = obj('PartDesign::Fillet', 'Fillet', [
       base('Ghost', ['Edge1']),
