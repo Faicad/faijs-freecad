@@ -1466,6 +1466,37 @@ describe('H7 Part::Feature pure-Shape carrier', () => {
     if (r.kind === 'baked') expect(r.reason).toContain('shape-asset-missing');
   });
 
+  // P1.1 (2026-09-28, multifuse-missing-dependency): a partial-angle
+  // Part::Sphere used to bake with NO variable, so Part::MultiFuse members
+  // listing it gaped (led-5mm corpus: Fusion.Shapes = [Cylinder, Cylinder001,
+  // Sphere]). The sphere still carries a frozen result Shape — shape-asset
+  // import is the honest fallback (D8: no fake parametrization), keeping the
+  // fusion chain alive. Without .brp evidence it must still bake explicitly.
+  it('GOTCHA (P1.1): partial-angle sphere WITH a frozen .brp → shape-asset fallback; WITHOUT → explicit bake', () => {
+    const partial = (name: string): FcstdObject =>
+      obj('Part::Sphere', name, [
+        prop('Radius', { name: 'Float', attrs: { value: '2.5' } }),
+        prop('Angle1', { name: 'Float', attrs: { value: '-90' } }),
+        prop('Angle2', { name: 'Float', attrs: { value: '45' } }),
+        prop('Angle3', { name: 'Float', attrs: { value: '360' } }),
+        prop('Shape', { name: 'Part', attrs: { file: `${name}.Shape.brp` } }),
+      ]);
+    const withBrp = translateObject(partial('Sphere'), dep, undefined, new Set(['Sphere']));
+    expect(withBrp).toMatchObject({ kind: 'translated', reason: 'shape-asset: sphere-partial-angle fallback' });
+    if (withBrp.kind === 'translated') {
+      expect(withBrp.calls[0]!.op).toBe('cad.import_brep');
+      expect(withBrp.calls[0]!.params).toEqual({ asset: 'Sphere.Shape' });
+    }
+    const bare = obj('Part::Sphere', 'SphereBare', [
+      prop('Radius', { name: 'Float', attrs: { value: '2.5' } }),
+      prop('Angle1', { name: 'Float', attrs: { value: '-90' } }),
+      prop('Angle2', { name: 'Float', attrs: { value: '45' } }),
+      prop('Angle3', { name: 'Float', attrs: { value: '360' } }),
+    ]);
+    const without = translateObject(bare, dep, undefined, new Set());
+    expect(without).toMatchObject({ kind: 'baked', reason: 'sphere-partial-angle' });
+  });
+
   it('works for both plain and ShapeMaterial variants (corpus shapes 41× / 29×)', () => {
     for (const carrier of [shapeCarrier('Face001'), shapeCarrier('Face002', true)]) {
       const r = translateObject(carrier, dep, undefined, new Set([carrier.name]));

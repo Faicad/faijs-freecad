@@ -859,6 +859,20 @@ export function translateObject(
       const angle2 = propNum(obj, 'Angle2') ?? 90;
       const angle3 = propNum(obj, 'Angle3') ?? 360;
       if (angle1 !== -90 || angle2 !== 90 || angle3 !== 360) {
+        // P1.1 (2026-09-28, multifuse-missing-dependency): a partial-angle
+        // sphere used to bake with NO variable, so any Part::MultiFuse listing
+        // it in `Shapes` gaped with `multifuse-missing-dependency` (led-5mm /
+        // RGB-led-5mm corpus: Fusion.Shapes = [Cylinder, Cylinder001, Sphere]).
+        // The sphere still carries its frozen result Shape (.brp member) —
+        // importing it as a shape-asset is an honest fact, not fake
+        // parametrization (D8), and keeps the fusion chain alive.
+        if (shapeCarriers?.has(obj.name)) {
+          return {
+            kind: 'translated',
+            calls: [shapeAssetCall(obj, shapeBrpFile(obj) ?? `${obj.name}.Shape.brp`)],
+            reason: 'shape-asset: sphere-partial-angle fallback',
+          };
+        }
         return { kind: 'baked', reason: 'sphere-partial-angle' };
       }
       const [x, y, z] = placementPos(obj);
