@@ -1196,7 +1196,21 @@ export function translateObject(
       // marker; codegen retargets it at the chain head when folding. Only an
       // EXPLICIT base that fails to resolve is a dependency gap.
       const baseVar = base ? inputVar(base) : BODY_CHAIN_BASE;
-      if (!profileVar || !baseVar) return { kind: 'baked', reason: 'pocket-missing-dependency' };
+      // P-next (2026-09-28, Foot corpus): the profile sketch often depends on
+      // SOLID FEATURE edges (Pad.Edge8) whose projection degenerates to
+      // 0/1 points — the sketch bakes (external-geometry-unresolved) and the
+      // pocket loses its profile. The pocket carries its frozen result Shape:
+      // shape-asset fallback keeps the chain alive (D8: honest fact).
+      if (!profileVar || !baseVar) {
+        if (shapeCarriers?.has(obj.name)) {
+          return {
+            kind: 'translated',
+            calls: [shapeAssetCall(obj, shapeBrpFile(obj) ?? `${obj.name}.Shape.brp`)],
+            reason: 'shape-asset: pocket-missing-dependency fallback',
+          };
+        }
+        return { kind: 'baked', reason: 'pocket-missing-dependency' };
+      }
       if (!lenSym && hasNonConstantBinding(obj, 'Length')) {
         return { kind: 'baked', reason: 'pocket-length-expression-non-constant' };
       }

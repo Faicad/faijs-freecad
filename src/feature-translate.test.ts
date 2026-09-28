@@ -1499,6 +1499,29 @@ describe('M6.1 Fillet / Chamfer (edge anchors via cad.edgeRef)', () => {
     expect(translateObject(bare, sketchDep)).toMatchObject({ kind: 'baked', reason: 'pad-upTo-missing-base' });
   });
 
+  // P-next GOTCHA (Foot corpus, 2026-09-28): a Pocket whose profile sketch
+  // bakes (external refs to SOLID feature edges degenerate) loses its profile
+  // → pocket-missing-dependency. With a frozen result Shape the pocket must
+  // fall back to a shape-asset import (D8); without one it stays a bake.
+  it('GOTCHA (P-next): pocket with unresolvable profile but a frozen .brp → shape-asset fallback; WITHOUT → explicit bake', () => {
+    const withBrp = obj('PartDesign::Pocket', 'Pocket', [
+      prop('Profile', { name: 'Link', attrs: { value: 'Sketch001' } }),
+      prop('Type', { name: 'String', attrs: { value: 'ThroughAll' } }),
+      prop('Shape', { name: 'Part', attrs: { file: 'Pocket.Shape.brp' } }),
+    ]);
+    const r = translateObject(withBrp, dep, undefined, new Set(['Pocket']));
+    expect(r).toMatchObject({ kind: 'translated', reason: 'shape-asset: pocket-missing-dependency fallback' });
+    if (r.kind === 'translated') {
+      expect(r.calls[0]!.op).toBe('cad.import_brep');
+      expect(r.calls[0]!.params).toEqual({ asset: 'Pocket.Shape' });
+    }
+    const bare = obj('PartDesign::Pocket', 'PocketBare', [
+      prop('Profile', { name: 'Link', attrs: { value: 'Sketch001' } }),
+      prop('Type', { name: 'String', attrs: { value: 'ThroughAll' } }),
+    ]);
+    expect(translateObject(bare, dep)).toMatchObject({ kind: 'baked', reason: 'pocket-missing-dependency' });
+  });
+
   // P1.7 GOTCHA (28BYJ-48 corpus, 2026-09-28): a partial-angle cylinder bakes
   // with no variable and cascades cut/fuse-missing-dependency downstream. With
   // a frozen result Shape it must fall back to a shape-asset import (D8);
