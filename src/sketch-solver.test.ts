@@ -148,6 +148,38 @@ describe('sketch solver channel (M3)', () => {
     expect(line.y2).toBeCloseTo(20, 6);
   });
 
+  // GOTCHA (2026-09-28, second pass — a regression the vertex fix could have
+  // shipped): `pos` is a PointPos on the ORIGINAL curve, NOT a sample index.
+  // 0 = the edge, 1/2 = its start/end, 3 = its CENTRE. Resolving a ref onto a
+  // discretized multi-point external (an arc: hundreds of samples) by treating
+  // `pos` as a sample index pins the WRONG location — measured on
+  // FAULHABER_2342L-012CPR, where 6/62 sketches flipped from L1 'failed' to L0
+  // once multi-point refs went back to being unresolvable. So the resolver must
+  // answer only for a straight 2-point edge and a 1-point vertex.
+  it('leaves external refs onto a sampled multi-point polyline unresolved', async () => {
+    const geoms = parseSketchObject(
+      geomProp(
+        `<Geometry type="Part::GeomLineSegment"><LineSegment StartX="5" StartY="5" StartZ="0" EndX="45" EndY="5" EndZ="0"/></Geometry>`,
+      ),
+      undefined,
+      true,
+    ).geoms;
+    // A 5-sample "arc" whose 3rd sample sits far away from the line.
+    const external = [{ geoId: -3, polyline: [[10, 20], [11, 21], [12, 22], [13, 23], [14, 24]] as [number, number][] }];
+    const result = await solver.solve(
+      geoms,
+      [{ index: 0, type: 1, refs: [{ geoId: 0, pos: 1 }, { geoId: -3, pos: 3 }], value: 0, isDriving: true, name: '' }],
+      external,
+    );
+    expect(isOk(result)).toBe(true);
+    const outcome = (result as { value: { geoms: typeof geoms; converged: boolean; reason?: string } }).value;
+    expect(outcome.converged, `reason: ${outcome.reason}`).toBe(true);
+    const line = outcome.geoms[0] as unknown as { x1: number; y1: number };
+    // Unchanged: sample #3 is not an addressable point of the external curve.
+    expect(line.x1).toBeCloseTo(5, 6);
+    expect(line.y1).toBeCloseTo(5, 6);
+  });
+
   // GOTCHA (P3-2, Mannequin_mp corpus 2026-09-24): constraint types 15
   // (InternalAlignment), 17 (Block) and 19 (Weight) do NOT affect the solved
   // geometry — they used to fail the WHOLE sketch with
