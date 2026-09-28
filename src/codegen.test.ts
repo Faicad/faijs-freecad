@@ -250,6 +250,68 @@ describe('M5 codegen', () => {
     expect(r.code).toMatch(/Extrude_Sketch199__place/);
   });
 
+  // GOTCHA (W2 type②, 2026-09-28, Wall-Hung-Toilets): a subtractive feature
+  // (Pocket) whose profile sketch carries a non-identity Placement must be
+  // re-oriented by placing its CUT, and the feature's own boolean must consume
+  // the *placed* cut — NOT the un-placed one (or the pocket lands at the origin
+  // and the fillet's edge ordinal is out of range). The placement step must:
+  //   (a) emit `cad.place(<original-cut-var>, …)` — never a self-reference
+  //       (`cad.place(X, X)`), which is a forward-ref at parse time and also
+  //        drops the real input so the call mis-routes to main;
+  //   (b) retarget the subtract's tool input at the placed copy;
+  //   (c) declare the placed copy BEFORE the subtract that consumes it (faijs
+  //       rejects forward refs).
+  it('re-orients a Pocket CUT by the profile sketch Placement and retargets the boolean tool', () => {
+    const body = simpleObj('PartDesign::Body', 'Body');
+    body.properties.set('Group', {
+      name: 'Group', type: 'App::PropertyLinkList', tagName: 'Property',
+      children: [{
+        name: 'LinkList', type: '', tagName: 'LinkList',
+        children: [
+          { name: 'Link', type: '', tagName: 'Link', children: [], valueXml: '', valueText: '', attributes: { value: 'Pad' } },
+          { name: 'Link', type: '', tagName: 'Link', children: [], valueXml: '', valueText: '', attributes: { value: 'Pocket' } },
+        ],
+        valueXml: '', valueText: '', attributes: { count: '2' },
+      }],
+      valueXml: '', valueText: '', attributes: {},
+    });
+    const doc: FcstdDocument = {
+      objects: [
+        body,
+        simpleObj('Sketcher::SketchObject', 'Sketch', {}),
+        simpleObj('PartDesign::Pad', 'Pad', { Profile: { value: 'Sketch' }, Length: { value: '10' } }),
+        simpleObj('Sketcher::SketchObject', 'Sketch001', {}),
+        simpleObj('PartDesign::Pocket', 'Pocket', { Profile: { value: 'Sketch001' }, BaseFeature: { value: 'Pad' }, Length: { value: '5' } }),
+      ],
+      typeIndex: new Map(),
+      meta: new Map(),
+    };
+    const verdicts = new Map([
+      ['Sketch', { level: 'L0' as const, loopCount: 1 }],
+      ['Sketch001', { level: 'L0' as const, loopCount: 1 }],
+    ]);
+    const contours = new Map([
+      ['Sketch', square()],
+      ['Sketch001', square()],
+    ]);
+    const placements = new Map<string, { p: [number, number, number]; q: [number, number, number, number] }>([
+      ['Sketch001', { p: [0, 0, 984], q: [0, 0, 0, 1] }],
+    ]);
+    const r = generateModel(doc, verdicts, contours, 't', placements);
+    // (a) the place call takes the ORIGINAL cut var — never a self-reference
+    expect(r.code).toMatch(/cad\.place\(Pocket_cut,/);
+    expect(r.code).not.toMatch(/cad\.place\(Pocket__place, Pocket__place\)/);
+    // (b) the feature's own subtract consumes the placed cut (tool retargeted)
+    expect(r.code).toMatch(/cad\.subtract\(Pad, Pocket__place\)/);
+    // (c) the placed cut is declared BEFORE the subtract (no forward ref)
+    const placeIdx = r.code.indexOf('cad.place(Pocket_cut');
+    const subIdx = r.code.indexOf('cad.subtract(Pad, Pocket__place');
+    expect(placeIdx).toBeGreaterThanOrEqual(0);
+    expect(subIdx).toBeGreaterThan(placeIdx);
+    // and the placed var resolves to the sketch placement, not the origin
+    expect(r.code).toContain('position: [0,0,984]');
+  });
+
   it('renders JsExpr edge anchors verbatim for Fillet/Chamfer (M6.1)', () => {
     const fillet = withLinkSub(
       simpleObj('PartDesign::Fillet', 'Fillet', { Radius: { value: '4' } }),

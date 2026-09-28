@@ -123,4 +123,26 @@ describe('H3 attachment resolution (MapMode enum GOTCHA + FlatFace chain)', () =
     ]);
     expect(resolveAttachment(modern, placements)).toBeDefined();
   });
+
+  it('W2 type②: face-attachment (Support sub="Face6" of a solid) trusts the pre-resolved stored Placement', () => {
+    // Wall-Hung-Toilets: Sketch002 attached FlatFace to Pad001/Face6. FreeCAD
+    // pre-resolves the attached frame and stores Pz=984 in Placement. The
+    // whole-object frame (Pad001) is the origin, so recomputing from it would
+    // yield identity and drop the face offset — the pocket tool would land at
+    // the origin and degenerate. resolveAttachment must return the stored value.
+    const pad = obj('PartDesign::Pad', 'Pad001', [
+      placementProp('Placement', { Px: '0', Py: '0', Pz: '0', Q0: '0', Q1: '0', Q2: '0', Q3: '1' }),
+    ]);
+    const placements = new Map<string, Placement>([['Pad001', placementOf(pad)]]);
+    const sketch = obj('Sketcher::SketchObject', 'Sketch002', [
+      mapModeProp(5),
+      supportProp('Pad001', 'Face6'),
+      offsetProp({ Px: '0', Py: '0', Pz: '0', Q0: '0', Q1: '0', Q2: '0', Q3: '1' }),
+      placementProp('Placement', { Px: '0', Py: '0', Pz: '984', Q0: '0', Q1: '0', Q2: '0', Q3: '1' }),
+    ]);
+    const resolved = resolveAttachment(sketch, placements);
+    expect(resolved).toBeDefined();
+    // stored Placement is authoritative for face-attached objects
+    expect(resolved!.placement.p).toEqual([0, 0, 984]);
+  });
 });

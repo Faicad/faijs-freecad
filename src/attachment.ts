@@ -10,12 +10,19 @@
  *   MapMode 0 = mmDeactivated (no attachment; Placement stands alone)
  *
  * Full Attacher.cpp semantics (normal-projection onto a face, Frenet frames on
- * curves, three-point modes) are far beyond what the corpus exercises: all
+ * curves, three-point modes) are far beyond what the corpus exercises: the
  * corpus Support targets are datum planes / origin planes, where the resolved
  * frame IS the support's placement, then rotated per-mode and composed with
  * AttachmentOffset. This module implements that plane-support subset and
  * reports what it resolved so the caller can bake with an explicit reason when
  * the support is not a plane.
+ *
+ * EXCEPTION (W2 type②, 2026-09-27): when the Support names a *sub-shape* of a
+ * solid — `Face6` / `Edge3` of a Pad/Pocket — FreeCAD pre-resolves the
+ * attached object's stored `Placement` onto that face and writes it back, so the
+ * stored value is authoritative. Recomputing from the whole-object placement
+ * drops the face offset and yields identity (misplacing the feature at the
+ * origin). For sub-shape supports we return the stored Placement directly.
  *
  * GOTCHAs (probed on real files):
  * - MapMode is `App::PropertyEnumeration` stored as `<Integer value="N"/>`,
@@ -95,6 +102,21 @@ export interface AttachmentResolution {
 }
 
 /**
+ * A support that names a sub-shape of a solid (e.g. `Face6` of a Pad) pins the
+ * attached object onto that face. FreeCAD pre-resolves the object's stored
+ * `Placement` to the face frame, so the correct placement is the stored value
+ * itself — recomputing from the *whole-object* placement silently drops the
+ * face offset and yields identity (W2 type②, Wall-Hung-Toilets: `Sketch002`
+ * attached to `Pad001/Face6` stores Pz=984, but the whole-object frame is the
+ * origin, so the recompute produced identity and the pocket tool landed at the
+ * origin instead of on the face). Datum-plane / origin-plane supports (sub is
+ * empty or a plane name) still use the composed frame below.
+ */
+function isSubShapeSupport(sub: string): boolean {
+  return /^Face\d+$/.test(sub) || /^Edge\d+$/.test(sub);
+}
+
+/**
  * Resolve the attachment chain of an object carrying AttachExtension
  * properties. Only plane-type supports are composed (corpus reality: all
  * active attachments target datum/origin planes); anything else — or a
@@ -113,13 +135,21 @@ export function resolveAttachment(
   if (mode === undefined || mode === ATTACH_MAP_MODE.DEACTIVATED) return undefined;
   const support = firstLinkSub(obj);
   if (!support) return undefined;
+
+  // Face/edge attachment: trust the pre-resolved stored Placement (see
+  // isSubShapeSupport). FreeCAD has already composed Support ∘ AttachmentOffset
+  // onto the face frame and written it to `Placement`.
+  if (isSubShapeSupport(support.sub)) {
+    return { placement: placementOf(obj), mapMode: mode, support };
+  }
+
   const supportPlacement = placements.get(support.target);
   if (!supportPlacement) return undefined;
 
   // Plane-support modes: the support's frame IS the base frame. (mmFlatFace
   // on a plane, mmObjectXY/XZ/YZ and mmTranslate all coincide here; on a real
-  // face or curve they diverge — those return undefined via the support-type
-  // check below once face frames are needed.)
+  // face or curve they diverge — those are handled by the sub-shape branch
+  // above via the pre-resolved stored Placement.)
   const offset = placementOfProp(obj.properties.get('AttachmentOffset'));
   const placement = compose(supportPlacement, offset);
   return { placement, mapMode: mode, support };

@@ -410,14 +410,19 @@ export function generateModel(
       // off 1.67). The sketch's Placement is the authoritative frame for the
       // built geometry; fall back to the feature's own for sketchless features.
       const lastVar = verdict.calls.at(-1)?.out;
-      // M8.3 frame resolution: the profile sketch link is `Sketch` on
-      // PartDesign features (Pad/Pocket/Revolution), but `Base` on
-      // `Part::Extrusion` — a plain Part-workbench extrude of a sketch.
-      // W2 (2026-09-27, Shutter Double doors): reading only `Sketch` left
-      // Part::Extrusion results un-placed (built in sketch-local frame but
-      // never re-oriented by the sketch's Placement).
+      // M8.3 frame resolution: the profile sketch link is `Sketch` on some
+      // PartDesign features, `Profile` on others (FreeCAD 0.18/0.19 mix both
+      // even within one file — e.g. Wall-Hung-Toilets: the base Pad uses
+      // `Sketch`, later Pad001/Pocket use `Profile`), and `Base` on
+      // `Part::Extrusion` (a plain Part-workbench extrude of a sketch). Read
+      // all three so face-attached sketches are re-oriented by their Placement.
+      // GOTCHA (W2 type②, 2026-09-27): reading only `Sketch`/`Base` left
+      // Profile-linked features (Pad001/Pocket) un-placed — `pl` fell back to
+      // the feature's own identity Placement and the pocket tool landed at the
+      // origin, degenerating and overrunning the fillet's edge ordinal.
       const sketchLink =
         obj.properties.get('Sketch')?.children[0]?.attributes['value'] ??
+        obj.properties.get('Profile')?.children[0]?.attributes['value'] ??
         obj.properties.get('Base')?.children[0]?.attributes['value'];
       const sketchIsSketchObj =
         sketchLink !== undefined &&
@@ -432,18 +437,53 @@ export function generateModel(
       // vs 450). The caller passes `prePlacedAssets` derived from the .brp
       // header itself (brpHasEmbeddedLocation) — place only when NOT embedded.
       const isPrePlaced = prePlacedAssets?.has(name) ?? false;
-      if (lastVar && pl && !isIdentityPlacement(pl) && !isPrePlaced) {
-        // 单个刚性放置：旋转（四元数，绕局部原点）+ 平移 = FreeCAD Placement(P,Q)。
-        // 直接发 cad.place，避免 euler 往返损失精度（方案 §4.7：两语句合一）。
-        const cur = lastVar;
+      // Subtractive features (Pocket/Cut) pair a profile-extrude CUT with an
+      // already-placed base inside `cad.subtract`. Re-orient the CUT (not the
+      // subtracted result) so the boolean runs in one frame — the carved result
+      // then inherits that frame and must NOT be placed again (W2 type②,
+      // Wall-Hung-Toilets: placing the subtract result left the cut local at the
+      // origin, so the pocket missed and overran the fillet's edge ordinal).
+      const featureIsSubtractive = obj.type === 'PartDesign::Pocket' || obj.type === 'Part::Cut';
+      // Locate the cut/tool: it is the subtract's SECOND input (base is first).
+      // GOTCHA (W2 type② regression, 2026-09-28): the verdict's `out` values
+      // were already rename-remapped at line ~369, so matching `c.out` against
+      // the raw `${name}_cut` string NEVER matched and silently disabled the
+      // subtractive path. Read the (renamed) input instead.
+      const subCall = featureIsSubtractive ? verdict.calls.find((c) => c.op === 'cad.subtract') : undefined;
+      const cutVar = subCall && subCall.inputs.length >= 2 ? subCall.inputs[1] : undefined;
+      const reorientVar = cutVar ?? lastVar;
+      if (lastVar && pl && !isIdentityPlacement(pl) && !isPrePlaced && reorientVar) {
+        // Single rigid placement: rotate (quaternion about local origin) +
+        // translate = FreeCAD Placement(P,Q). Emit `cad.place` with the ORIGINAL
+        // (unplaced) var as input — do NOT pre-remap `cur` to `rv`, or the place
+        // call would self-reference its own output (cad.place(X, X)): that is a
+        // forward-ref at run time AND drops the real input so the call mis-routes
+        // to main, leaving the Body terminal dangling (Body__chain_N undeclared).
+        const cur = reorientVar;
         const rv = emitVar(`${name}__place`);
-        variables.set(cur, rv); // map old name → placed var for consumers
-        calls.push({
+        const placeCall: CadCall = {
           out: rv, op: 'cad.place', source: name, inputs: [cur],
           params: { rotation: [...pl.q], position: [...pl.p] },
-        });
-        // the object's variable is now the fully placed result
-        variables.set(name, rv);
+        };
+        if (featureIsSubtractive && subCall && cutVar) {
+          // Re-orient the CUT only: retarget the subtract's tool input at the
+          // placed copy. The carved result (lastVar) inherits the cut's global
+          // frame, so `name` stays mapped to its own (already global-frame)
+          // output — the chain head must remain the carved solid, not the bare
+          // cut prism. (W2 type②: placing the subtract result left the cut local
+          // at the origin, so the pocket missed and overran the fillet edge.)
+          // GOTCHA: faijs is a statement language that REJECTS forward refs, so
+          // the placed copy must be declared BEFORE the subtract that consumes it
+          // — insert the place call immediately ahead of the subtract.
+          subCall.inputs[1] = rv;
+          const at = calls.indexOf(subCall);
+          calls.splice(at < 0 ? calls.length : at, 0, placeCall);
+        } else {
+          // Additive: the chain-fold (emitted later this iteration) consumes the
+          // placed feature, so append and redirect consumers via `variables`.
+          calls.push(placeCall);
+          variables.set(cur, rv);
+        }
       }
       // M9.4 (D-C): fold the feature into its Body's chain — AFTER the placement
       // step so the chain accumulates the PLACED feature shape. Pocket/Cut
