@@ -210,6 +210,41 @@ export function readModule(bytes: Uint8Array, key: string): string {
   return strFromU8(member);
 }
 
+/**
+ * Read one model data member's JSON text by member path (e.g. `data/main.json`).
+ *
+ * The path must be exactly what `models[].data` declares (spec §4): a safe,
+ * relative member under `data/` ending with `.json`. Content is validated to
+ * parse as JSON — the editor keeps data members pure JSON (§2.5), so a
+ * non-JSON member is a format violation and an error, never a silent skip.
+ *
+ * @param bytes the .fai.zip archive bytes
+ * @param memberPath the member path named by `models[].data`
+ * @returns the raw JSON text
+ * @throws for a non-string/unsafe path, a path outside `data/`, a missing
+ *   member, or content that does not parse as JSON
+ */
+export function readDataMember(bytes: Uint8Array, memberPath: string): string {
+  if (typeof memberPath !== 'string' || memberPath === '') {
+    throw new Error('[fai-zip] readDataMember: memberPath must be a non-empty string');
+  }
+  assertSafeMemberPath(memberPath, 'readDataMember path');
+  if (!memberPath.startsWith('data/') || !memberPath.endsWith('.json')) {
+    throw new Error(`[fai-zip] readDataMember: path must be under data/ and end with .json: "${memberPath}"`);
+  }
+  const member = unzipMembers(bytes)[memberPath];
+  if (member === undefined) {
+    throw new Error(`[fai-zip] readDataMember: member "${memberPath}" does not exist in the container`);
+  }
+  const text = strFromU8(member);
+  try {
+    JSON.parse(text);
+  } catch (e) {
+    throw new Error(`[fai-zip] readDataMember: "${memberPath}" is not valid JSON: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  return text;
+}
+
 /** Asset key of a member: base name with the final extension removed (spec §7). */
 function assetKeyOf(path: string, prefix: string): string {
   const rel = path.slice(prefix.length);

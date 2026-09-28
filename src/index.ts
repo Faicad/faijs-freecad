@@ -26,6 +26,7 @@ export {
   listModels,
   listModules,
   readModule,
+  readDataMember,
   readAssetEntries,
   openContainer,
 } from './container-read.js';

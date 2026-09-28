@@ -21,6 +21,7 @@ import {
   listModels,
   listModules,
   readModule,
+  readDataMember,
   readAssetEntries,
   openContainer,
 } from './container-read.js';
@@ -181,6 +182,39 @@ describe('listModules / readModule — module keys', () => {
 
   it('readModule throws for an empty key', () => {
     expect(() => readModule(CONFORMING, '')).toThrow(/key must be a non-empty string/);
+  });
+});
+
+describe('readDataMember — model data JSON', () => {
+  const WITH_DATA = buildContainer({
+    models: [
+      { id: 'plate', entry: 'model/plate.fai.js', data: 'data/plate.json' },
+      { id: 'pure', entry: 'model/plate.fai.js' },
+    ],
+    extraMembers: { 'data/plate.json': '{"format": 3, "stores": {"model": {}}}' },
+  });
+
+  it('returns the raw JSON text of a named data member', () => {
+    const text = readDataMember(WITH_DATA, 'data/plate.json');
+    expect(text).toBe('{"format": 3, "stores": {"model": {}}}');
+  });
+
+  it('throws for a missing data member, naming the path', () => {
+    expect(() => readDataMember(WITH_DATA, 'data/nope.json')).toThrow(/does not exist in the container/);
+  });
+
+  it('throws for a path outside data/ (unsafe or wrong prefix)', () => {
+    expect(() => readDataMember(WITH_DATA, 'model/plate.fai.js')).toThrow(/must be under data\/ and end with \.json/);
+    expect(() => readDataMember(WITH_DATA, '../data/x.json')).toThrow(/unsafe member path/);
+    expect(() => readDataMember(WITH_DATA, 'data/x.txt')).toThrow(/must be under data\/ and end with \.json/);
+  });
+
+  it('throws for non-JSON content — data members are pure JSON by spec', () => {
+    const bad = buildContainer({
+      models: [{ id: 'plate', entry: 'model/plate.fai.js', data: 'data/plate.json' }],
+      extraMembers: { 'data/plate.json': 'not json {' },
+    });
+    expect(() => readDataMember(bad, 'data/plate.json')).toThrow(/not valid JSON/);
   });
 });
 
