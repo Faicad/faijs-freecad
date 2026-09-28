@@ -1426,6 +1426,57 @@ describe('M6.1 Fillet / Chamfer (edge anchors via cad.edgeRef)', () => {
     expect(translateObject(bare, dep)).toMatchObject({ kind: 'baked', reason: 'compound-missing-members' });
   });
 
+  // P-next GOTCHA (USB-2_0-type-A corpus, 2026-09-28): a LinearPattern whose
+  // `Direction` references a SOLID FEATURE edge (`Pad003.Edge6`) cannot be
+  // resolved (resolveSketchEdgeAxis only reads sketch geometry). With a frozen
+  // result Shape it must fall back to a shape-asset import (D8); without one
+  // it stays an explicit bake.
+  it('GOTCHA (P-next): solid-edge Direction WITH a frozen .brp → shape-asset fallback; WITHOUT → explicit bake', () => {
+    // source resolves (dep returns a var) so the failure lands on Direction
+    const depOk = (): string | undefined => 'Sketch';
+    // Originals LinkList WITH one <Link value="Sketch"/> child (prop() cannot
+    // nest grandchildren, so build the two-level structure inline)
+    const originalsProp = (name: string, file?: string): [string, FcstdProperty] => [
+      name,
+      {
+        name, type: 'App::PropertyLinkList', tagName: 'Property',
+        children: [{
+          name: 'LinkList', type: '', tagName: 'LinkList',
+          children: [{ name: 'Link', type: '', tagName: 'Link', children: [], valueXml: '', valueText: '', attributes: { value: 'Sketch' } }],
+          valueXml: '', valueText: '', attributes: { count: '1' },
+        }],
+        valueText: '', attributes: {},
+      },
+    ];
+    // Direction LinkSub WITH a Sub child (`Edge6` of a SOLID feature —
+    // prop() cannot nest grandchildren, so build it inline). Without the Sub
+    // child parseReferenceAxis would treat "Pad003" as the default +Z axis.
+    const dirProp = (): [string, FcstdProperty] => [
+      'Direction',
+      {
+        name: 'Direction', type: 'App::PropertyLinkSub', tagName: 'Property',
+        children: [{
+          name: 'LinkSub', type: '', tagName: 'LinkSub',
+          children: [{ name: 'Sub', type: '', tagName: 'Sub', children: [], valueXml: '', valueText: '', attributes: { value: 'Edge6' } }],
+          valueXml: '', valueText: '', attributes: { value: 'Pad003', count: '1' },
+        }],
+        valueText: '', attributes: {},
+      },
+    ];
+    const withBrp = obj('PartDesign::LinearPattern', 'LP', [
+      originalsProp('Originals'),
+      dirProp(),
+      prop('Shape', { name: 'Part', attrs: { file: 'LP.Shape.brp' } }),
+    ]);
+    const r = translateObject(withBrp, depOk, undefined, new Set(['LP']));
+    expect(r).toMatchObject({ kind: 'translated', reason: 'shape-asset: linear-pattern-edge-dir-unsupported fallback' });
+    const bare = obj('PartDesign::LinearPattern', 'LPBare', [
+      originalsProp('Originals'),
+      dirProp(),
+    ]);
+    expect(translateObject(bare, depOk)).toMatchObject({ kind: 'baked', reason: 'linear-pattern-edge-dir-unsupported' });
+  });
+
   // P1.7 GOTCHA (28BYJ-48 corpus, 2026-09-28): a partial-angle cylinder bakes
   // with no variable and cascades cut/fuse-missing-dependency downstream. With
   // a frozen result Shape it must fall back to a shape-asset import (D8);

@@ -1516,7 +1516,22 @@ export function translateObject(
         return { kind: 'baked', reason: 'linear-pattern-missing-source' };
       }
       const dirInfo = resolveAxisRef(obj, 'Direction');
-      if (!dirInfo) return { kind: 'baked', reason: 'linear-pattern-edge-dir-unsupported' };
+      // P-next (2026-09-28, USB-2_0-type-A corpus): `Direction` routinely
+      // references a SOLID FEATURE edge (`<LinkSub value="Pad003"><Sub
+      // value="Edge6"/>`), not a sketch edge — resolveSketchEdgeAxis only
+      // resolves sketch geometry, so the axis is unrecoverable. The pattern
+      // still carries its frozen result Shape: shape-asset fallback keeps the
+      // chain alive (D8: honest fact, no fake axis guess).
+      if (!dirInfo) {
+        if (shapeCarriers?.has(obj.name)) {
+          return {
+            kind: 'translated',
+            calls: [shapeAssetCall(obj, shapeBrpFile(obj) ?? `${obj.name}.Shape.brp`)],
+            reason: 'shape-asset: linear-pattern-edge-dir-unsupported fallback',
+          };
+        }
+        return { kind: 'baked', reason: 'linear-pattern-edge-dir-unsupported' };
+      }
       const occ = Math.max(2, Math.round(propNum(obj, 'Occurrences') ?? 2));
       const length = propNum(obj, 'Length') ?? 0;
       const spacing = occ > 1 ? length / (occ - 1) : 0;
