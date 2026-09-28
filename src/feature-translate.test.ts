@@ -1403,6 +1403,29 @@ describe('M6.1 Fillet / Chamfer (edge anchors via cad.edgeRef)', () => {
     expect(translateObject(bare, dep)).toMatchObject({ kind: 'baked', reason: 'linear-pattern-missing-source' });
   });
 
+  // P1.6 GOTCHA (arduino-mega corpus, 2026-09-28): a Part::Compound with an
+  // EMPTY Links list (`<LinkList count="0">`) serializes no members — FreeCAD
+  // dissolved them. With a frozen result Shape it must fall back to a
+  // shape-asset import (honest fact, D8) instead of baking
+  // compound-missing-members and orphaning downstream consumers.
+  it('GOTCHA (P1.6): Part::Compound with EMPTY Links but a frozen .brp → shape-asset fallback; WITHOUT → explicit bake', () => {
+    const empty = obj('Part::Compound', 'Compound', [
+      prop('Links', { name: 'LinkList', attrs: {} }),
+      prop('Shape', { name: 'Part', attrs: { file: 'Compound.Shape.brp' } }),
+    ]);
+    const r = translateObject(empty, dep, undefined, new Set(['Compound']));
+    expect(r).toMatchObject({ kind: 'translated', reason: 'shape-asset: compound-missing-members fallback' });
+    if (r.kind === 'translated') {
+      expect(r.calls[0]!.op).toBe('cad.import_brep');
+      expect(r.calls[0]!.params).toEqual({ asset: 'Compound.Shape' });
+    }
+    // no frozen Shape → still the explicit missing-members bake
+    const bare = obj('Part::Compound', 'CompoundBare', [
+      prop('Links', { name: 'LinkList', attrs: {} }),
+    ]);
+    expect(translateObject(bare, dep)).toMatchObject({ kind: 'baked', reason: 'compound-missing-members' });
+  });
+
   it('bakes Fillet/Chamfer with an unresolved base or a bad size', () => {
     const orphan = obj('PartDesign::Fillet', 'Fillet', [
       base('Ghost', ['Edge1']),

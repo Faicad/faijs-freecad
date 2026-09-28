@@ -836,7 +836,19 @@ export function translateObject(
         return member ? !isNonModelingType(member.type) : true;
       });
       const vars = geometryMembers.map((m) => inputVar(m));
+      // P1.6 (2026-09-28, arduino-mega corpus): a Part::Compound with an EMPTY
+      // Links list (`<LinkList count="0">`) serializes no members at all —
+      // FreeCAD dissolved them. The compound still carries its frozen result
+      // Shape (.brp member): shape-asset import is the honest fallback (D8),
+      // keeping downstream consumers alive.
       if (vars.length === 0 || vars.some((v) => v === undefined)) {
+        if (shapeCarriers?.has(obj.name)) {
+          return {
+            kind: 'translated',
+            calls: [shapeAssetCall(obj, shapeBrpFile(obj) ?? `${obj.name}.Shape.brp`)],
+            reason: 'shape-asset: compound-missing-members fallback',
+          };
+        }
         return { kind: 'baked', reason: 'compound-missing-members' };
       }
       // `Part::Compound` 是几何对象（`Part::Feature` 子类，带 Shape + Placement）。
