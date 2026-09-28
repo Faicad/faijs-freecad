@@ -12,19 +12,27 @@
  * treat the property as unknown and degrade (no heuristic fallback, plan §12).
  */
 import type { FcstdProperty } from './document.js';
+// 单位单一真源收敛（D5）：长度换算统一走 @faicad/faijs/units，本文件不再是
+// 换算表，只保留 FC 语料别名 → faijs 单位名的映射（数值存在 units 一处）。
+import { toBase } from '@faicad/faijs/units';
 
 /** Evaluated expression result in mm (angles keep their own unit): a number, or undefined when unsupported. */
 export type ExprValue = number | undefined;
 
-const UNIT_TO_MM: Record<string, number> = {
-  mm: 1, millimeter: 1,
-  cm: 10, centimeter: 10,
-  m: 1000, meter: 1000,
-  in: 25.4, inch: 25.4, '"': 25.4,
-  ft: 304.8, foot: 304.8,
-  // angles: value kept in the expression's own unit; callers interpret
-  deg: 1, degree: 1, '°': 1,
-  rad: 1, radian: 1,
+/** FC expression length-unit alias → faijs unit name. Values live in `@faicad/faijs/units`. */
+const FC_LENGTH_UNITS: Record<string, string> = {
+  mm: 'mm', millimeter: 'mm',
+  cm: 'cm', centimeter: 'cm',
+  m: 'm', meter: 'm',
+  in: 'inch', inch: 'inch', '"': 'inch',
+  ft: 'foot', foot: 'foot',
+};
+// Angle units: FreeCAD keeps the value in its own unit (degree stays degree,
+// radian stays radian); the caller interprets the unit. Per D5 this must stay a
+// separate branch — applying the length scale would turn 10 deg into 0.1745.
+const FC_ANGLE_UNITS: Record<string, true> = {
+  deg: true, degree: true, '°': true,
+  rad: true, radian: true,
 };
 
 /**
@@ -42,11 +50,14 @@ export function evalConstantExpression(expr: string): ExprValue {
   if (!m) return undefined;
   const value = Number(m[1]);
   if (!Number.isFinite(value)) return undefined;
-  const unit = m[2]!;
+  const unit = m[2]!.toLowerCase();
   if (unit === '') return value;
-  const factor = UNIT_TO_MM[unit.toLowerCase()];
-  if (factor === undefined) return undefined; // unknown unit → unsupported
-  return value * factor;
+  // Angle branch (independent): value keeps its own unit (D5). Do NOT scale.
+  if (FC_ANGLE_UNITS[unit]) return value;
+  // Length branch (mm base via units single source of truth).
+  const name = FC_LENGTH_UNITS[unit];
+  if (name === undefined) return undefined; // unknown unit → unsupported
+  return toBase(value, name as never, 'length');
 }
 
 // ── P1-1 参数载体（2026-09-23）：Spreadsheet 别名三跳解析 + 引用算术 ──
