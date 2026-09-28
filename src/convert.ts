@@ -194,7 +194,9 @@ export async function convertFcstdFile(input: string, opts?: ConvertOptions): Pr
       // links` while resolveExternalGeometry had actually succeeded). The
       // solver pins multi-point polylines as fixed sampled targets
       // (planegcs-backend M6.3), so any deduped polyline >= 2 is usable.
-      const usable = ext.links.filter((l) => l.polyline.length >= 2);
+      // 2026-09-28: a `VertexN` link resolves to a SINGLE point — also a
+      // usable fixed target — so the filter is >= 1 now.
+      const usable = ext.links.filter((l) => l.polyline.length >= 1);
       if (usable.length === 0) {
         sketchVerdict.set(obj.name, {
           level: 'L2',
@@ -202,7 +204,13 @@ export async function convertFcstdFile(input: string, opts?: ConvertOptions): Pr
         });
         continue;
       }
-      external = usable.map((l, i) => ({ geoId: -3 - i, polyline: l.polyline }));
+      // geoId must follow the SOURCE link order (`-3 - linkIndex`), not the
+      // position inside `usable`: FreeCAD keeps slot `-3 - i` for the i-th
+      // ExternalGeometry entry even when an earlier link fails to resolve, so
+      // deriving it from the filtered index shifted every later ref onto a
+      // non-existent geoId — dropped silently by the solver's unresolvable
+      // check, with no failure record anywhere.
+      external = usable.map((l) => ({ geoId: -3 - l.linkIndex, polyline: l.polyline }));
     }
     try {
       const r = await solver.solve(sk.geoms, sk.constraints, external);

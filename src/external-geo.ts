@@ -1,9 +1,20 @@
 /**
  * M6.3 — external geometry resolution: decode ExternalGeometry links
  * (App::PropertyLinkSubList), load the source object's .brp via OCCT,
- * extract the named edge polyline (TopExp::MapShapes + IndexedMap order —
+ * extract the named sub-element (TopExp::MapShapes + IndexedMap order —
  * Edge13 = wireframe edgeGroups[12], verified against hole_puzzle.fcstd),
  * and project it into sketch-local 2D via the sketch Placement inverse.
+ *
+ * Sub-elements arrive either as an `EdgeN` (discretized to a polyline) or as a
+ * `VertexN` (a single point — GOTCHA, corner-corpus 2026-09-28: links like
+ * `Revolution005.Vertex19` were rejected with "unsupported sub-element" and
+ * failed 16/904 corpus files before vertices were handled).
+ *
+ * The source `.brp` stores shape coordinates in the DOCUMENT frame, not the
+ * source object's local frame — verified by probe-brpframe.mjs on
+ * door-keeper.FCStd, whose `Sketch001.Vertex1` sits at y = 110 = the source
+ * Placement translation. So the sketch's own inverse Placement is the whole
+ * transform; the source object's Placement must NOT be composed again.
  *
  * Result: fixed 2D segments/points that the solver treats as immutable
  * constraints targets (geoId -3, -4, ... in link order).
@@ -18,9 +29,16 @@ import type { FcstdDocument, FcstdObject, FcstdProperty } from './document.js';
 export interface ExternalLink {
   /** source object name, e.g. "Chamfer002" */
   obj: string;
-  /** sub-element name, e.g. "Edge13" */
+  /** sub-element name, e.g. "Edge13" or "Vertex19" */
   sub: string;
-  /** resolved sketch-local 2D polyline */
+  /**
+   * Zero-based position of this link in the sketch's ExternalGeometry list.
+   * The solver's geoId is `-3 - linkIndex` and FreeCAD keeps that slot even
+   * when a link fails to resolve, so the caller must use THIS index rather
+   * than the position inside the successfully-resolved subset.
+   */
+  linkIndex: number;
+  /** resolved sketch-local 2D polyline; a single point for a `VertexN` link */
   polyline: [number, number][];
 }
 
@@ -106,48 +124,108 @@ export async function resolveExternalGeometry(
 
   const kernel: {
     fromBREP: (s: string) => unknown;
-    wireframe: (s: unknown, deflection: number) => { points: Float32Array; edgeGroups: number[] };
+    wireframe: (s: unknown, deflection: number) => { points: Float32Array; edgeGroups: Int32Array | number[] };
+    getSubShapes: (s: unknown, type: 'vertex') => unknown[];
+    vertexPosition: (v: unknown) => { x: number; y: number; z: number };
+    release: (s: unknown) => void;
   } = (await initOcctWasm()) as never;
 
-  const brpCache = new Map<string, { points: Float32Array; edgeGroups: number[] } | undefined>();
-  const wireframeOf = (objName: string) => {
-    if (brpCache.has(objName)) return brpCache.get(objName);
+  const shapeCache = new Map<string, unknown>();
+  const shapeOf = (objName: string): unknown => {
+    if (shapeCache.has(objName)) return shapeCache.get(objName);
     const src = doc.objects.find((o) => o.name === objName);
     const brpFile = src ? shapeBrpFile(src) : undefined;
-    if (!brpFile) {
-      brpCache.set(objName, undefined);
-      return undefined;
+    const brp = brpFile ? memberText(archive, brpFile) : undefined;
+    let shape: unknown;
+    if (brp) {
+      try {
+        shape = kernel.fromBREP(brp);
+      } catch {
+        shape = undefined;
+      }
     }
-    const brp = memberText(archive, brpFile);
-    if (!brp) {
-      brpCache.set(objName, undefined);
-      return undefined;
-    }
-    try {
-      const shape = kernel.fromBREP(brp);
-      const wf = kernel.wireframe(shape, 0.01);
-      brpCache.set(objName, wf);
-      return wf;
-    } catch {
-      brpCache.set(objName, undefined);
-      return undefined;
-    }
+    shapeCache.set(objName, shape);
+    return shape;
   };
 
-  for (const link of listEl.children) {
+  const wfCache = new Map<string, { points: Float32Array; edgeGroups: Int32Array | number[] } | undefined>();
+  const wireframeOf = (objName: string) => {
+    if (wfCache.has(objName)) return wfCache.get(objName);
+    const shape = shapeOf(objName);
+    let wf: { points: Float32Array; edgeGroups: Int32Array | number[] } | undefined;
+    if (shape) {
+      try {
+        wf = kernel.wireframe(shape, 0.01);
+      } catch {
+        wf = undefined;
+      }
+    }
+    wfCache.set(objName, wf);
+    return wf;
+  };
+
+  // Vertex ordinals are 1-based in link names (like Edge) and index the same
+  // TopExp map order getSubShapes yields. Positions are cached per source
+  // object so several links onto one shape do not re-walk its vertices.
+  const vtxCache = new Map<string, [number, number, number][] | undefined>();
+  const verticesOf = (objName: string): [number, number, number][] | undefined => {
+    if (vtxCache.has(objName)) return vtxCache.get(objName);
+    const shape = shapeOf(objName);
+    let out: [number, number, number][] | undefined;
+    if (shape) {
+      try {
+        const handles = kernel.getSubShapes(shape, 'vertex');
+        out = handles.map((h) => {
+          const p = kernel.vertexPosition(h);
+          return [p.x, p.y, p.z];
+        });
+        for (const h of handles) kernel.release(h);
+      } catch {
+        out = undefined;
+      }
+    }
+    vtxCache.set(objName, out);
+    return out;
+  };
+
+  for (const [linkIndex, link] of Array.from(listEl.children).entries()) {
     const obj = link.attributes['obj'] ?? '';
     const sub = link.attributes['sub'] ?? '';
-    const ord = Number(sub.replace('Edge', ''));
-    if (!obj || !sub.startsWith('Edge') || !Number.isInteger(ord) || ord < 1) {
+    const edgeOrd = sub.startsWith('Edge') ? Number(sub.slice('Edge'.length)) : NaN;
+    const vertOrd = sub.startsWith('Vertex') ? Number(sub.slice('Vertex'.length)) : NaN;
+    const isEdge = Number.isInteger(edgeOrd) && edgeOrd >= 1;
+    const isVertex = Number.isInteger(vertOrd) && vertOrd >= 1;
+    if (!obj || (!isEdge && !isVertex)) {
       failures.push({ obj, sub, reason: `unsupported sub-element: ${sub}` });
       continue;
     }
+    if (!shapeOf(obj)) {
+      failures.push({ obj, sub, reason: 'source shape not loadable' });
+      continue;
+    }
+
+    if (isVertex) {
+      const verts = verticesOf(obj);
+      if (!verts) {
+        failures.push({ obj, sub, reason: 'source shape not loadable' });
+        continue;
+      }
+      const w = verts[vertOrd - 1];
+      if (!w) {
+        failures.push({ obj, sub, reason: `vertex ordinal out of range (${verts.length} vertices)` });
+        continue;
+      }
+      const l = toLocal(w);
+      links.push({ obj, sub, linkIndex, polyline: [[l[0], l[1]]] });
+      continue;
+    }
+
     const wf = wireframeOf(obj);
     if (!wf) {
       failures.push({ obj, sub, reason: 'source shape not loadable' });
       continue;
     }
-    const idx = ord - 1; // Edge13 → edgeGroups[12]
+    const idx = edgeOrd - 1; // Edge13 → edgeGroups[12]
     const g0 = wf.edgeGroups[idx * 3];
     const g1 = wf.edgeGroups[idx * 3 + 1];
     if (g0 === undefined || g1 === undefined) {
@@ -167,7 +245,7 @@ export async function resolveExternalGeometry(
     const deduped = polyline.filter(
       (pt, i) => i === 0 || Math.hypot(pt[0] - polyline[i - 1]![0], pt[1] - polyline[i - 1]![1]) > 1e-9,
     );
-    if (deduped.length >= 2) links.push({ obj, sub, polyline: deduped });
+    if (deduped.length >= 2) links.push({ obj, sub, linkIndex, polyline: deduped });
     else failures.push({ obj, sub, reason: 'degenerate polyline' });
   }
   return { links, failures };
