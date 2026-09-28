@@ -1477,6 +1477,28 @@ describe('M6.1 Fillet / Chamfer (edge anchors via cad.edgeRef)', () => {
     expect(translateObject(bare, depOk)).toMatchObject({ kind: 'baked', reason: 'linear-pattern-edge-dir-unsupported' });
   });
 
+  // P-next GOTCHA (LED_0603 corpus, 2026-09-28): a Body-less PartDesign Pad
+  // with Type=UpToLast serializes "implied base" by OMITTING BaseFeature —
+  // the kernel up-to support is unrecoverable. With a frozen result Shape the
+  // pad must fall back to a shape-asset import (D8); without one it stays an
+  // explicit bake.
+  it('GOTCHA (P-next): UpTo pad with NO BaseFeature but a frozen .brp → shape-asset fallback; WITHOUT → explicit bake', () => {
+    // sketch resolves so the failure lands on the missing BaseFeature branch
+    const sketchDep = (): string | undefined => 'Sketch005';
+    const withBrp = obj('PartDesign::Pad', 'Pad003', [
+      prop('Sketch', { name: 'Link', attrs: { value: 'Sketch005' } }),
+      prop('Type', { name: 'String', attrs: { value: 'UpToLast' } }),
+      prop('Shape', { name: 'Part', attrs: { file: 'Pad003.Shape.brp' } }),
+    ]);
+    const r = translateObject(withBrp, sketchDep, undefined, new Set(['Pad003']));
+    expect(r).toMatchObject({ kind: 'translated', reason: 'shape-asset: pad-upTo-missing-base fallback' });
+    const bare = obj('PartDesign::Pad', 'PadBare', [
+      prop('Sketch', { name: 'Link', attrs: { value: 'Sketch005' } }),
+      prop('Type', { name: 'String', attrs: { value: 'UpToLast' } }),
+    ]);
+    expect(translateObject(bare, sketchDep)).toMatchObject({ kind: 'baked', reason: 'pad-upTo-missing-base' });
+  });
+
   // P1.7 GOTCHA (28BYJ-48 corpus, 2026-09-28): a partial-angle cylinder bakes
   // with no variable and cascades cut/fuse-missing-dependency downstream. With
   // a frozen result Shape it must fall back to a shape-asset import (D8);

@@ -1133,7 +1133,21 @@ export function translateObject(
         // or we bake explicitly — no silent bbox-derived length guess.
         const base = propLink(obj, 'BaseFeature');
         const baseVar = base ? inputVar(base) : undefined;
-        if (!baseVar) return { kind: 'baked', reason: 'pad-upTo-missing-base' };
+        // P-next (2026-09-28, LED_0603 corpus): Body-less files serialize
+        // "implied base" by OMITTING BaseFeature entirely (Type=UpToLast, no
+        // BaseFeature property). The kernel up-to needs an explicit support we
+        // cannot recover — but the pad carries its frozen result Shape:
+        // shape-asset fallback keeps the chain alive (D8: honest fact).
+        if (!baseVar) {
+          if (shapeCarriers?.has(obj.name)) {
+            return {
+              kind: 'translated',
+              calls: [shapeAssetCall(obj, shapeBrpFile(obj) ?? `${obj.name}.Shape.brp`)],
+              reason: 'shape-asset: pad-upTo-missing-base fallback',
+            };
+          }
+          return { kind: 'baked', reason: 'pad-upTo-missing-base' };
+        }
         const upTo = ftype === 'UpToLast' ? 'last' : 'first';
         return {
           kind: 'translated',
