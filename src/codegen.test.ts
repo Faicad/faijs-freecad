@@ -145,6 +145,45 @@ describe('M5 codegen', () => {
     expect(r.code).toContain('cad.extrude');
   });
 
+  // A3 (D3 (b), 2026-09-28): a parametric sketch with a NON-identity
+  // Placement emits the explicit plane frame { origin, normal, xAxis } inside
+  // the cad.sketch call itself (one-step placement via the shared
+  // sketchOnPlane core) — the post-hoc cad.place re-orientation must NOT be
+  // applied to the sketch statement.
+  // GOTCHA (两帧往返): the frame axes come from the SAME placement quaternion
+  // the run-time re-solve assumes (u = R·X, n = R·Z) — mixing frames would
+  // double-rotate the sketch.
+  it('emits a rotated sketch as cad.sketch with an explicit plane frame (no cad.place on the sketch)', () => {
+    const sketch = simpleObj('Sketcher::SketchObject', 'Sketch199', {});
+    sketch.properties.set('Placement', {
+      name: 'Placement', type: 'App::PropertyPlacement', tagName: 'Property',
+      children: [{
+        name: 'PropertyPlacement', type: '', tagName: 'PropertyPlacement',
+        children: [], valueXml: '', valueText: '',
+        attributes: { Px: '0', Py: '0', Pz: '250', Q0: '0', Q1: '0.707106781187', Q2: '0', Q3: '0.707106781187' },
+      }],
+      valueXml: '', valueText: '', attributes: {},
+    } as never);
+    const pad = simpleObj('PartDesign::Pad', 'Pad', { Profile: { value: 'Sketch199' }, Length: { value: '10' } });
+    const doc: FcstdDocument = {
+      objects: [sketch, pad],
+      typeIndex: new Map(),
+      meta: new Map(),
+    };
+    const geoms = [{ kind: 'line' as const, x1: 0, y1: 0, x2: 40, y2: 0 }];
+    const inputs = new Map([['Sketch199', { geoms, constraints: [] }]]);
+    const placements = new Map([['Sketch199', { p: [0, 0, 250] as [number, number, number], q: [0, 0.707106781187, 0, 0.707106781187] as [number, number, number, number] }]]);
+    const r = generateModel(doc, new Map(), NO_CONTOURS, 't', placements, undefined, undefined, undefined, undefined, inputs);
+    const sketchRes = r.objects.find((o) => o.name === 'Sketch199');
+    expect(sketchRes).toMatchObject({ disposition: 'translated' });
+    // the frame rides INSIDE the cad.sketch params…
+    expect(r.code).toContain('cad.sketch');
+    expect(r.code).toContain('"normal"');
+    expect(r.code).toContain('"origin"');
+    // …and the sketch statement is not re-placed afterwards
+    expect(r.code).not.toMatch(/cad\.place\([^)]*Sketch199/);
+  });
+
   it('bakes sketches without verdicts/contours; wires them to cad.profile when solved', () => {
     const doc: FcstdDocument = {
       objects: [

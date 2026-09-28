@@ -21,7 +21,7 @@ import {
 } from './feature-translate.js';
 import type { FilletEdgeEntry } from './fillet-edges.js';
 import type { Contour, SketchGeom, SketchConstraint } from '@faicad/faijs-sketch';
-import { type Placement, isIdentityPlacement, invertApplyPlacement } from './placement.js';
+import { type Placement, isIdentityPlacement, invertApplyPlacement, planeBasis } from './placement.js';
 import { isNonModelingType } from './structural-types.js';
 
 /** Per-object codegen outcome: what was emitted for one FCStd object. */
@@ -295,9 +295,28 @@ export function generateModel(
       if (inputs) {
         const v = emitVar(name);
         variables.set(name, v);
+        // A3 (D3 (b), 2026-09-28): the sketch's (attachment-resolved) Placement
+        // becomes an explicit plane frame `{ origin, normal, xAxis }` — the
+        // solved contours land on the sketch plane IN ONE STEP via the shared
+        // sketchOnPlane placement core, replacing the M8.3 post-hoc
+        // `cad.place` re-orientation hack for sketches.
+        // GOTCHA (两帧往返): FCStd sketch-local XY maps through the placement
+        // quaternion — u = R·X, n = R·Z; the run-time op re-solves in LOCAL
+        // coords then lifts to this frame, so parity holds iff the axes come
+        // from the SAME quaternion (planeBasis, placement.ts).
+        let plane: { origin: [number, number, number]; normal: [number, number, number]; xAxis: [number, number, number] } | undefined;
+        const skPl = placements?.get(name);
+        if (skPl && !isIdentityPlacement(skPl)) {
+          const { u, n } = planeBasis(skPl);
+          plane = { origin: [...skPl.p], normal: n, xAxis: u };
+        }
         const sketchCall: CadCall = {
           out: v, op: 'cad.sketch', source: name, inputs: [],
-          params: { geoms: inputs.geoms, constraints: inputs.constraints.length > 0 ? inputs.constraints : undefined },
+          params: {
+            geoms: inputs.geoms,
+            constraints: inputs.constraints.length > 0 ? inputs.constraints : undefined,
+            plane,
+          },
         };
         calls.push(sketchCall);
         results.push({
