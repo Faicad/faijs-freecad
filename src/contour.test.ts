@@ -28,6 +28,39 @@ describe('contour extraction (M3.6)', () => {
     expect(contours[0]!.segments[0]!.kind).toBe('arc');
   });
 
+  // A6 (2026-09-28 plan) GOTCHA: ellipses were silently DROPPED before — the
+  // segEnds default branch returned undefined and no other pass picked them
+  // up. FCStd stores no partial ellipse arcs in Geometry, so every ellipse is
+  // a closed whole: it must yield one self-closed sampled polyline contour.
+  it('GOTCHA (A6): an ellipse yields one self-closed contour (was silently dropped before)', () => {
+    const geoms: SketchGeom[] = [{
+      kind: 'ellipse', index: 0, cx: 10, cy: 20, cz: 0,
+      majorRadius: 30, minorRadius: 15, angleXU: Math.PI / 6,
+      fx1: 0, fy1: 0, fx2: 0, fy2: 0,
+    }];
+    const contours = extractContours(geoms);
+    expect(contours.length).toBe(1);
+    expect(contours[0]!.closed).toBe(true);
+    // 64-chord sampled polyline run
+    expect(contours[0]!.segments.length).toBe(64);
+    // all points lie on the rotated ellipse (max radial error < chord sagitta)
+    const ca = Math.cos(Math.PI / 6);
+    const sa = Math.sin(Math.PI / 6);
+    for (const s of contours[0]!.segments) {
+      if (s.kind !== 'line') continue;
+      for (const [x, y] of [[s.x1, s.y1], [s.x2, s.y2]] as const) {
+        const dx = x - 10, dy = y - 20;
+        const u = dx * ca + dy * sa;   // major-axis coordinate
+        const v = -dx * sa + dy * ca;  // minor-axis coordinate
+        const err = Math.abs((u / 30) ** 2 + (v / 15) ** 2 - 1);
+        expect(err).toBeLessThan(0.03);
+      }
+    }
+    // construction ellipses stay excluded (reference geometry, not profile)
+    const cons = extractContours([{ ...geoms[0]!, construction: true }]);
+    expect(cons.length).toBe(0);
+  });
+
   it('leaves open chains out of the contour set', () => {
     const geoms: SketchGeom[] = [
       { kind: 'line', index: 0, x1: 0, y1: 0, z1: 0, x2: 10, y2: 0, z2: 0 },
