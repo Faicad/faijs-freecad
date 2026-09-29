@@ -40,6 +40,7 @@ import {
   type DraftContour,
   type DraftEdge,
   type DraftSegment,
+  type DraftSplineSegment,
   type Point2,
 } from './draft-draw.js';
 import type { FcstdObject } from './document.js';
@@ -400,5 +401,106 @@ describe('snapContour', () => {
     const seg = out[0] as DraftArcSegment;
     expect(seg.startAngle).toBe(seg.endAngle);
     expect(seg.radius).toBeCloseTo(25, 9);
+  });
+});
+
+/**
+ * A2 (2026-09-29 plan) — the parametric-curve segment. Before A2, every
+ * `bezier` / `bspline` Draft edge fell into the per-edge tessellation fallback
+ * and reached the wire as a polyline; A2 reads the NURBS control data straight
+ * from the kernel and emits a `DraftSplineSegment` carrying it. The exact-curve
+ * path is what `draft-parametric-e2e.test.ts` asserts end to end (BY EXECUTION,
+ * on real FreeCAD documents) — these cases pin the PURE helpers that path leans
+ * on, so a regression in the walk or the reversal shows up without a wasm init.
+ */
+describe('DraftSplineSegment (A2 exact-curve emission)', () => {
+  function spline(over: Partial<DraftSplineSegment> = {}): DraftSplineSegment {
+    return {
+      kind: 'spline',
+      degree: 3,
+      poles: [0, 0, 10, 5, 20, 0, 30, -5],
+      knots: [0, 0, 0, 0, 1, 1, 1, 1],
+      multiplicities: [4, 4],
+      periodic: false,
+      first: 0,
+      last: 1,
+      x1: 0, y1: 0,
+      x2: 30, y2: -5,
+      ...over,
+    };
+  }
+
+  it('segmentStart/segmentEnd read the exact endpoints, not derived params', () => {
+    // For a spline the endpoints are the kernel's own `curvePointAtParam(first/last)`;
+    // deriving them from the control polygon (as a line/arc does) would be wrong.
+    const s = spline();
+    expect(segmentStart(s)).toEqual([0, 0]);
+    expect(segmentEnd(s)).toEqual([30, -5]);
+  });
+
+  it('GOTCHA: reversing a spline twice returns the SAME curve exactly (no approximation)', () => {
+    // A reversed B-spline is still a B-spline: `reverseSplineSegment` reflects the
+    // knot vector about the domain midpoint and reverses poles/weights/mults. The
+    // chain walk reverses an edge whenever its END meets the tail, so this must
+    // round-trip bit-exactly — a spline cannot be snapped back like a line or an arc.
+    const s = spline({ weights: [1, 2, 3, 4] });
+    const r = reverseSegment(s) as DraftSplineSegment;
+    const rr = reverseSegment(r) as DraftSplineSegment;
+    expect(rr).toEqual(s);
+  });
+
+  it('GOTCHA: a reversed spline keeps its NURBS control data (curve, not a point list)', () => {
+    const r = reverseSegment(spline({ weights: [1, 2, 3, 4] })) as DraftSplineSegment;
+    expect(r.kind).toBe('spline');
+    expect(r.degree).toBe(3);
+    expect(r.poles).toHaveLength(8);
+    expect(r.weights).toEqual([4, 3, 2, 1]);
+  });
+
+  it('GOTCHA: a contour containing a spline is NOT quantized (snapping would leave sub-micron seam gaps)', () => {
+    // `snapContour` quantizes the other segments only when every segment can be
+    // re-derived from its own rounded params; a spline cannot, so the whole
+    // contour passes through exact and the spline reference is returned unchanged.
+    const s = spline();
+    const out = snapContour([s], false, 1e-3);
+    expect(out[0]).toBe(s); // same reference ⇒ unmodified
+  });
+
+  it('a mixed contour with a spline keeps all segments and leaves the spline untouched', () => {
+    const line0 = lineSegment([0, 0], [10, 0]);
+    const s = spline({ x1: 10, y1: 0, x2: 10, y2: 10, poles: [10, 0, 10, 5, 10, 10] });
+    const line1 = lineSegment([10, 10], [0, 0]);
+    const out = snapContour([line0, s, line1], true, 1e-3);
+    expect(out).toHaveLength(3);
+    expect(out[0]).toBe(line0);
+    expect(out[1]).toBe(s);
+    expect(out[2]).toBe(line1);
+  });
+
+  it('chainDraftEdges walks a contour whose seam edge is a spline (segmentStart/End drive the match)', () => {
+    // A closed triangle: line → spline → line, head-to-tail. The spline's EXACT
+    // endpoints (not derived curve params) are what the walk joins on, and the
+    // spline survives the walk as a spline — it is NOT sampled into lines.
+    const e0: DraftEdge = { a: [0, 0], b: [10, 0], segments: [lineSegment([0, 0], [10, 0])] };
+    const sp: DraftSplineSegment = spline({
+      x1: 10, y1: 0, x2: 10, y2: 10,
+      poles: [10, 0, 10, 5, 10, 10], knots: [0, 0, 0, 1, 1, 1], multiplicities: [3, 3], degree: 2,
+    });
+    const e1: DraftEdge = { a: [10, 0], b: [10, 10], segments: [sp] };
+    const e2: DraftEdge = { a: [10, 10], b: [0, 0], segments: [lineSegment([10, 10], [0, 0])] };
+    const contours = chainDraftEdges([e0, e1, e2], 1e-3);
+    expect(contours).toHaveLength(1);
+    expect(contours[0]!.closed).toBe(true);
+    expect(contours[0]!.segments).toHaveLength(3);
+    expect(contours[0]!.segments.filter((s) => s.kind === 'spline')).toHaveLength(1);
+  });
+
+  it('GOTCHA: a rational spline carries weights and the trim range is reflected exactly on reversal', () => {
+    const s = spline({ first: 0.2, last: 0.8, weights: [1, 1, 2, 1] });
+    expect(s.weights).toEqual([1, 1, 2, 1]);
+    const r = reverseSegment(s) as DraftSplineSegment;
+    // reflect(p) = d1 - (p - d0) with d0 = 0, d1 = 1 ⇒ first↔last swap. 1-0.8 = 0.2, 1-0.2 = 0.8.
+    expect(r.first).toBeCloseTo(0.2, 12);
+    expect(r.last).toBeCloseTo(0.8, 12);
   });
 });
