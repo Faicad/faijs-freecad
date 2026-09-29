@@ -1,18 +1,26 @@
 /**
- * A4 Draft drawing chain — end to end, and by EXECUTION.
+ * A4/A1 Draft drawing chain — end to end, and by EXECUTION.
  *
  * The standing rule for this pipeline is that a gap-free conversion summary proves
- * nothing: the product itself must run. Before this fix, 11 of 15 converted corpus
+ * nothing: the product itself must run. The first implementation chained
+ * `pen.moveTo(…).lineTo(…)` — an API that does not exist (`moveTo` is
+ * `movePointerTo`) and a *member chain* that nests one AST level per segment. Draft
+ * contours carry hundreds to thousands of segments, so 11 of 15 converted corpus
  * drawings could not execute at all, 10 of them with
- * `[parser] AST nesting depth exceeds 100` — a `cad.draw` pen *member chain* nests
- * one AST level per segment, and Draft contours carry hundreds to thousands of
- * tessellated points. The eleventh raised `cad.draw is not a function` because the
- * emitted drawing had never once been executed.
+ * `[parser] AST nesting depth exceeds 100`, and the eleventh with
+ * `cad.draw is not a function` because the emitted drawing had never once been run.
+ *
+ * A1 (2026-09-29) then replaced the intermediate form entirely: the contour now
+ * travels as the platform's own `ProfileLoop` data (`{segments: […]}`) straight
+ * into `cad.sketchOnPlane`, so there is no pen chain, no `cad.draw` session and no
+ * local function per contour — and analytic source curves stay analytic instead of
+ * being tessellated first (see `draft-analytic-e2e.test.ts` for that half, and
+ * `draft-draw.ts` for why the tessellating form hung on every Sprocket).
  *
  * This file pins the whole chain on real documents:
- *   draft .brp  →  one `cad.draw` per wire (`pen.polyline([…])`)  →  `cad.sketchOnPlane`
- *   (the object's own Placement as the lift frame)  →  a Shape the rest of the
- *   document consumes via `cad.extrude` / `cad.sweep`.
+ *   draft .brp  →  one `ProfileLoop` per wire  →  `cad.sketchOnPlane` (the object's
+ *   own Placement as the lift frame)  →  a Shape the rest of the document consumes
+ *   via `cad.extrude` / `cad.sweep`.
  *
  * Corpus-dependent like the sibling e2e files: the FreeCAD library lives in the
  * sibling checkout, so this SKIPS (never fails) when it is absent.
@@ -33,9 +41,12 @@ import { openContainer } from './container-read.js';
 
 installSketchSolver(createNodePlanegcsSolver);
 
-// The host a real `.fai.zip` consumer must provide: platform + sketch + draw. The
-// Draft emission needs `draw` specifically, which is why `@faicad/faijs-fcstd`
-// declares it as a runtime dependency.
+// The host a real `.fai.zip` consumer must provide: platform + sketch + draw. Until
+// A1 (2026-09-29) the Draft emission called `cad.draw`, which is why
+// `@faicad/faijs-fcstd` declares `@faicad/faijs-draw` as a runtime dependency; the
+// contours now travel as `ProfileLoop` data, so that dependency is worth revisiting
+// (kept registered here because it is still declared and the host must match the
+// declared surface).
 const CAD_NS = mergeDrawNamespace(mergeSketchNamespace(createApiNamespace()));
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -99,26 +110,24 @@ async function runProduct(zip: Uint8Array): Promise<string | undefined> {
 describe.skipIf(!existsSync(CORPUS))('A4 Draft drawing chain (real FreeCAD documents)', () => {
   for (const c of CASES) {
     describe.skipIf(!existsSync(join(CORPUS, c.rel)))(c.name, () => {
-      it('emits one draw call per wire plus a sketchOnPlane placement', async () => {
+      it('emits one ProfileLoop per wire, lifted by a sketchOnPlane placement', async () => {
         const summary = await convertFcstdFile(join(CORPUS, c.rel));
         expect(summary.ok, `gaps: ${JSON.stringify(summary.gaps)}`).toBe(true);
         expect(summary.zip).toBeDefined();
         const src = mainSource(summary.zip!);
-        // GOTCHA: the original emission chained `pen.moveTo(…).lineTo(…)` — an API
-        // that does not exist (`moveTo` is `movePointerTo`) and a shape that trips
-        // the AST depth cap. Assert the broken form is GONE, not just that the new
-        // one is present, or a regression could reintroduce it alongside.
+        // GOTCHA: assert the superseded forms are GONE, not just that the new one is
+        // present, or a regression could reintroduce them alongside. `pen.moveTo` /
+        // `pen.lineTo` are the depth-cap failure; `cad.draw` is the tessellating
+        // form that hung every Sprocket.
         expect(src).not.toMatch(/\bpen\.moveTo\(/);
         expect(src).not.toMatch(/pen\.lineTo\(/);
-        expect(src).toMatch(/cad\.draw\(\(pen\) => pen\.polyline\(\[/);
-        // The drawn contours are useless until something turns them into a Shape.
-        expect(src).toMatch(/cad\.sketchOnPlane\(\{ contours: \[/);
+        expect(src).not.toMatch(/cad\.draw\(/);
+        expect(src).toMatch(/cad\.sketchOnPlane\(\{ contours: \[\{/);
         // GOTCHA (Chair, 2026-09-28): the raw drawn contours carry NO BREP handle,
-        // so they must never leak into the root `cad.compound` aggregate — the
-        // placement call declares them in `inputs` (with `noPositionalArgs`) to
-        // keep them consumed. Leaking them produced
-        // `E_BREP_UNSUPPORTED: compound members are not all on the BREP chain`.
-        expect(src).not.toMatch(/cad\.compound\(\{ members: \[[^\]]*__draw/);
+        // so they must never leak into the root `cad.compound` aggregate. A1 removed
+        // the per-contour variable entirely — the loop data lives inside the call's
+        // `params` — so pin that no `__draw` variable exists at all.
+        expect(src).not.toMatch(/__draw/);
       }, 600_000);
 
       const runName = c.expectRun

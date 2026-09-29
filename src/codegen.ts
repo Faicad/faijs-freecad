@@ -24,7 +24,6 @@ import type { LeafParam } from './params.js';
 import type { Contour, SketchGeom, SketchConstraint } from '@faicad/faijs-sketch';
 import { type Placement, isIdentityPlacement, invertApplyPlacement, planeBasis } from './placement.js';
 import { isNonModelingType } from './structural-types.js';
-import { renderDrawContour } from './draft-draw.js';
 import type { DraftDrawing } from './draft-draw.js';
 
 /** Per-object codegen outcome: what was emitted for one FCStd object. */
@@ -137,7 +136,7 @@ function bodyFeatureNames(obj: FcstdDocument['objects'][number]): string[] {
  * @param filletEdgesData parsed PropertyFilletEdges binaries keyed by object name (Part::Chamfer/Fillet)
  * @param prePlacedAssets pre-placed .brp assets (embedded Locations ≠ identity) that must not be re-placed
  * @param sketchInputs canonical geoms+constraints per parameterizable sketch (cad.sketch emission)
- * @param draftDrawings rebuilt Draft drawings per Part::Part2DObjectPython (cad.draw emission)
+ * @param draftDrawings rebuilt Draft drawings per Part::Part2DObjectPython (cad.sketchOnPlane ProfileLoop emission)
  * @param params the document's leaf parameters, emitted as `const p_*` headers in the
  *   modules that reference them (C1/C2/C4)
  * @returns the lowered call plan, per-object dispositions and generated code
@@ -162,7 +161,7 @@ export function generateModel(
   prePlacedAssets?: ReadonlySet<string>,
   /** A2: canonical geoms+constraints per parameterizable sketch (cad.sketch emission). */
   sketchInputs?: ReadonlyMap<string, { geoms: SketchGeom[]; constraints: SketchConstraint[] }>,
-  /** A4: rebuilt Draft drawings per Part::Part2DObjectPython (cad.draw emission). */
+  /** A1: rebuilt Draft drawings per Part::Part2DObjectPython (cad.sketchOnPlane ProfileLoop emission). */
   draftDrawings?: ReadonlyMap<string, DraftDrawing>,
   /** C1/C2/C4: the document's leaf parameters, emitted as top-level `const p_*`
    *  headers in the modules that reference them. */
@@ -306,12 +305,6 @@ export function generateModel(
   // subtract chain alive without a Body. The H7 guard remains for the
   // genuinely headless case (marker present before any loose feature built).
   let looseChainHead: string | undefined;
-  // A4: top-level local function defs (Draft drawings) — the .fai.js statement
-  // language rejects arrow functions in expression position (syntax-design
-  // §2.4), but function bodies allow them (§2.3). One def + one call per
-  // CONTOUR: a `cad.draw` session is a single-run flood pen and cannot carry two
-  // disjoint loops (`movePointerTo` refuses to lift once a curve exists).
-  const fnDefs = new Map<string, string>(); // fn name → def source
 
   for (const name of order) {
     const node = nodes.get(name)!;
@@ -412,45 +405,49 @@ export function generateModel(
       continue;
     }
 
-    // A4: Draft drawing objects with a rebuilt drawing → `cad.draw` per contour,
-    // then `cad.sketchOnPlane` to turn the drawn contours into a Shape.
+    // A1 (2026-09-29 plan): Draft drawing objects with a rebuilt drawing →
+    // `cad.sketchOnPlane` per shape kind, compounded when the drawing carries both.
     //
-    // Three facts force this shape (all measured 2026-09-28, see draft-draw.ts):
-    //  · One `cad.draw` session carries exactly ONE contour — `BaseSketcher2d`
-    //    refuses to lift the pen once a curve exists, and a Draft object holds
-    //    many disjoint loops (up to 61 measured). Hence one local function and
-    //    one call per contour.
-    //  · `cad.draw` yields a pure-data contour with NO OCCT handle, so it cannot
-    //    feed `cad.extrude`/`cad.sweep` directly (`E_BREP_INPUT: argument carries
-    //    no BREP handle`). The placement step is what closes that gap, and it is
-    //    exactly what the plan's A4 pipeline says happens next.
-    //  · The object's own variable must end up as a Shape, because Draft objects
-    //    are consumed like any other shape (`cad.sweep(Clone2D001, Clone2D002)`,
-    //    `cad.extrude(Clone2D005, …)`), so the placement call takes the object's
-    //    name and the contour variables stay off the object's exported identity.
-    //  · GOTCHA (Chair, 2026-09-28): the placement call MUST list the contour
-    //    variables in `inputs`. `lower()` derives the root aggregate from
-    //    `consumed = calls.flatMap(c => c.inputs)`; an empty `inputs` left every
-    //    contour variable looking unconsumed, so `assembly` swept the raw drawn
-    //    Blueprints (no BREP handle) into `cad.compound` and the product died at
-    //    `E_BREP_UNSUPPORTED: compound members are not all on the BREP chain`.
-    //    `cad.sketchOnPlane` is params-only, so `noPositionalArgs` keeps those
-    //    inputs as dependency registration (same pattern as `cad.compound`).
+    // The contours are the platform's own `ProfileLoop` data form (`{segments:
+    // […]}`) — the SAME form the solved-sketch path emits — so `profileSegToCurve`
+    // gets analytic line/arc segments and the kernel builds real
+    // `makeLineEdge`/`makeArcEdge` edges. This replaced two worse emissions:
+    //  · `pen.lineTo(…)` member chains, which nest one AST level per segment and
+    //    died on the parser's depth cap of 100 (10 of 15 corpus drawings), hence
+    //    the single-call `pen.polyline([…])` form; and
+    //  · that polyline form, which required a LOCAL FUNCTION PER CONTOUR (one
+    //    `cad.draw` session carries exactly one contour — `movePointerTo` refuses
+    //    to lift the pen once a curve exists) and threw away every analytic curve
+    //    in favour of a tessellation (168 analytic Sprocket edges → 7010 points,
+    //    and OCC never finished the wire; see draft-draw.ts).
+    // A single object-literal argument has neither problem at any segment count.
+    //
+    // A1 follow-up (2026-09-29): CLOSED and OPEN contours are different shapes and
+    // must not share one call.
+    //  · A closed contour is a PROFILE: `cad.sketchOnPlane` (default `as:'face'`)
+    //    builds a planar face out of it, which is what `cad.extrude` consumes.
+    //  · An OPEN contour is a PATH — a Draft outline used as a `cad.sweep` spine.
+    //    OCCT's `BRepBuilderAPI_MakeFace::IsDone()` is false for an open wire, so
+    //    handing one to the face call fails with
+    //    `CONSTRUCTION_FAILED: makeFace: construction failed`. Measured on Chair
+    //    (each `Shape2DView` projection is 17 open contours) and on
+    //    Kitchen_cabinet_base (spines `Clone2D004/010/017`, against closed
+    //    extrude profiles `Clone2D005/006/…`).
+    // So: all closed contours go to ONE face call (which keeps hole/island nesting
+    // intact — splitting per contour would turn every hole into a filled face),
+    // each open contour goes to its own `as:'wire'` call, and multiple parts are
+    // compounded. A uniformly closed drawing — every extruded `Clone2D*`, every
+    // Sprocket profile — collapses back to that single call.
+    //
+    // The object's own variable must end up as a Shape, because Draft objects are
+    // consumed like any other shape (`cad.sweep(Clone2D001, Clone2D002)`,
+    // `cad.extrude(Clone2D005, …)`), so the placement call carries the object's
+    // name. No contour variable exists to leak into the root `cad.compound`
+    // aggregate any more — the data lives inside the calls' `params`.
     const drawing = draftDrawings?.get(name);
     if (drawing && obj.type === 'Part::Part2DObjectPython') {
       const v = emitVar(name);
       variables.set(name, v);
-      const drawCalls: CadCall[] = [];
-      const contourVars: string[] = [];
-      for (let i = 0; i < drawing.contours.length; i++) {
-        const fn = sanitizeIdent(`draw_${name}_c${i}`);
-        const contour = drawing.contours[i]!;
-        fnDefs.set(fn, `function ${fn}() {\n  return cad.draw(${renderDrawContour(contour)});\n}`);
-        const cv = emitVar(`${name}__draw${i}`);
-        variables.set(`${name}__draw${i}`, cv);
-        contourVars.push(cv);
-        drawCalls.push({ out: cv, op: `local:${fn}`, source: `${name}[${i}]`, inputs: [], params: {} });
-      }
       // A3 parity with the sketch path: the object's Placement becomes the lift
       // frame. Identity → the plain XY plane (emitted explicitly so the generated
       // source states where the drawing lands).
@@ -460,19 +457,47 @@ export function generateModel(
         const { u, n } = planeBasis(drPl);
         plane = { origin: [...drPl.p], normal: n, xAxis: u };
       }
-      const placeCall: CadCall = {
-        out: v,
-        op: 'cad.sketchOnPlane',
-        source: name,
-        inputs: [...contourVars],
-        noPositionalArgs: true,
-        params: { contours: jsExpr(`[${contourVars.join(', ')}]`), plane },
-      };
-      drawCalls.push(placeCall);
-      calls.push(...drawCalls);
+      const closedContours = drawing.contours.filter((c) => c.closed);
+      const openContours = drawing.contours.filter((c) => !c.closed);
+      // One part per emitted shape: the closed group (one face / face-compound),
+      // then one wire per open contour.
+      const parts: { contours: DraftDrawing['contours']; as?: 'wire' }[] = [];
+      if (closedContours.length > 0) parts.push({ contours: closedContours });
+      for (const c of openContours) parts.push({ contours: [c], as: 'wire' });
+      const draftCalls: CadCall[] = [];
+      // A single part IS the object; two or more are compounded under its name.
+      const single = parts.length === 1;
+      const partVars: string[] = [];
+      for (const part of parts) {
+        const out = single ? v : emitVar(`${name}__part`);
+        partVars.push(out);
+        draftCalls.push({
+          out, op: 'cad.sketchOnPlane', source: name, inputs: [],
+          params: {
+            contours: part.contours.map((c) => ({ segments: c.segments })),
+            plane,
+            ...(part.as ? { as: part.as } : {}),
+          },
+        });
+      }
+      if (!single) {
+        // GOTCHA: `cad.compound`'s members travel as LEXICAL VARIABLE NAMES inside
+        // `params.members` (renderArgs renders them bare, not as strings), while
+        // `inputs` is what `lower()` uses to mark them consumed — without it the
+        // part variables look unconsumed and get swept into the root `cad.compound`
+        // a second time. `noPositionalArgs` keeps those inputs from being rendered
+        // as positional arguments the params-only op cannot accept.
+        draftCalls.push({
+          out: v, op: 'cad.compound', source: name,
+          inputs: [...partVars], noPositionalArgs: true,
+          params: { members: [...partVars] },
+        });
+      }
+      calls.push(...draftCalls);
       results.push({
-        name, type: obj.type, variable: v, calls: drawCalls,
-        disposition: 'translated', reason: `draft-draw(${contourVars.length} contours)`,
+        name, type: obj.type, variable: v, calls: draftCalls,
+        disposition: 'translated',
+        reason: `draft-draw(${closedContours.length} closed, ${openContours.length} open)`,
       });
       continue;
     }
@@ -842,7 +867,7 @@ export function generateModel(
         ...bodyCalls,
         { out: `${b}_out`, op: 'identity', source: b, inputs: [head], params: {} } as CadCall,
       ];
-      files.push({ path: `model/${b}.fai.js`, code: lowerBody(withTerminal, `${baseName}/${b}`, b, fnDefs, params), body: b });
+      files.push({ path: `model/${b}.fai.js`, code: lowerBody(withTerminal, `${baseName}/${b}`, b, params), body: b });
     }
     // main.fai.js: aggregate the per-Body terminals via cad.compound. M10c:
     // cross-file references close through the standard relative-import
@@ -884,7 +909,7 @@ export function generateModel(
     }
     code = lines.join('\n') + '\n';
   } else {
-    code = lower(calls, baseName, fnDefs, params);
+    code = lower(calls, baseName, params);
   }
   return { calls, objects: results, code, files, rootVar };
 }
@@ -895,7 +920,6 @@ function lowerBody(
   calls: CadCall[],
   label: string,
   body: string,
-  fnDefs?: ReadonlyMap<string, string>,
   params?: readonly LeafParam[],
 ): string {
   const lines: string[] = [];
@@ -904,18 +928,10 @@ function lowerBody(
   // C1/C2/C4: the parameter block precedes every use.
   const plines = paramLines(params, calls.map((c) => `${c.op} ${renderArgs(c)}`).join('\n'));
   for (const p of plines) lines.push(p);
-  // A4: top-level local function definitions come FIRST (declaration order is
-  // free in JS, but keeping them at the head reads like the drawing source).
-  if (fnDefs) for (const def of fnDefs.values()) lines.push(def);
   for (const call of calls) {
     if (call.op === 'identity') {
       // terminal alias: `let <Body>_out = <chain head>;`
       lines.push(`let ${call.out} = ${call.inputs[0]}; // s? ${body} terminal`);
-      continue;
-    }
-    // A4: local-function call (Draft → cad.draw session)
-    if (call.op.startsWith('local:')) {
-      lines.push(`let ${call.out} = ${call.op.slice('local:'.length)}(); // ${call.source}`);
       continue;
     }
     const id = `s${lines.length - 2 - plines.length}`;
@@ -930,7 +946,6 @@ function lowerBody(
 function lower(
   calls: CadCall[],
   baseName: string,
-  fnDefs?: ReadonlyMap<string, string>,
   params?: readonly LeafParam[],
 ): string {
   const lines: string[] = [];
@@ -939,14 +954,7 @@ function lower(
   // C1/C2/C4: the parameter block precedes every use.
   const plines = paramLines(params, calls.map((c) => `${c.op} ${renderArgs(c)}`).join('\n'));
   for (const p of plines) lines.push(p);
-  // A4: top-level local function definitions come FIRST.
-  if (fnDefs) for (const def of fnDefs.values()) lines.push(def);
   for (const call of calls) {
-    // A4: local-function call (Draft → cad.draw session)
-    if (call.op.startsWith('local:')) {
-      lines.push(`let ${call.out} = ${call.op.slice('local:'.length)}(); // ${call.source}`);
-      continue;
-    }
     const id = `s${lines.length - 2 - plines.length}`; // statement id sN
     const args = renderArgs(call);
     lines.push(`let ${call.out} = ${call.op}(${args}); // ${id} ${call.source}`);
@@ -969,7 +977,7 @@ function lower(
  * Only parameters the module actually references are emitted: a document-wide
  * list dumped into every Body module would be noise, and a module that declares
  * a lever it never reads misleads whoever edits it. `scan` is the rendered text
- * of the module's statements (ops + args + local function defs), so a parameter
+ * of the module's statements (ops + args), so a parameter
  * reached only through a body's sketch constraints is still caught.
  *
  * @param params - the document's leaf parameters (undefined → none).

@@ -1,21 +1,27 @@
 /**
- * Per-CONTOUR closure test over already-generated products (2026-09-28).
+ * Per-PRODUCT open/closed contour audit (2026-09-29).
  *
- * `DraftEdge.closed` in `draft-draw.ts` is per-EDGE (only a full-circle edge
- * closes on itself), while a Draft contour made of 4 straight edges closes only by
- * CHAINING. So "how many emitted contours are actually closed" cannot be read off
- * `edge.closed` — split each emitted pen chain at `moveTo(` boundaries and compare
- * the contour's first point with the point the chain ends on.
+ * A1 emits a Draft drawing as one `cad.sketchOnPlane` call per shape KIND: all
+ * closed contours in one call (no `as`), and one `as:'wire'` call per open
+ * contour (`draft-draw.ts` → `codegen.ts`). So the generated source states the
+ * split directly, and this probe reads it back off generated products instead of
+ * re-running the kernel — the only way to audit the whole library cheaply.
  *
- * Usage: npx tsx packages/fcstd/scripts/probe-contour-closure.ts
+ * Predecessor note: the previous version of this file parsed the superseded
+ * `cad.draw((pen) => pen.polyline(…))` form by splitting on `moveTo(`. That
+ * emission no longer exists, and its "geometrically closed" count was a
+ * re-measurement of points the converter had already decided about. Reading the
+ * emitted call kind is both simpler and truer to what the run time will build.
+ *
+ * Usage: npx tsx packages/fcstd/scripts/probe-contour-closure.ts [productsRoot]
+ *   (default `out/insp2`: one sub-directory per product, each with model/main.fai.js)
  */
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-const root = 'out/insp2';
-let contours = 0;
-let geoClosed = 0;
-let geoOpen = 0;
+const root = process.argv[2] ?? 'out/insp2';
+let closedLoops = 0;
+let openLoops = 0;
 const rows: string[] = [];
 
 for (const d of readdirSync(root)) {
@@ -26,30 +32,24 @@ for (const d of readdirSync(root)) {
   } catch {
     continue;
   }
-  const re = /return cad\.draw\(\(pen\) => pen\.([\s\S]*?)\);\r?\n\}/g;
-  let m: RegExpExecArray | null;
-  let c = 0;
-  let gc = 0;
-  let go = 0;
-  while ((m = re.exec(src)) !== null) {
-    const chunks = m[1]!.split(/moveTo\(/).slice(1);
-    for (const chunk of chunks) {
-      const nums = chunk.match(/-?\d+(?:\.\d+)?/g) ?? [];
-      const pts: [number, number][] = [];
-      for (let i = 0; i + 1 < nums.length; i += 2) pts.push([Number(nums[i]), Number(nums[i + 1])]);
-      c++;
-      if (pts.length < 2) { go++; continue; }
-      const a = pts[0]!;
-      const b = pts[pts.length - 1]!;
-      if (Math.hypot(a[0] - b[0], a[1] - b[1]) < 1e-6) gc++; else go++;
-    }
+  let closed = 0;
+  let open = 0;
+  for (const raw of src.split('cad.sketchOnPlane(').slice(1)) {
+    const call = raw.slice(0, raw.indexOf('});') + 1);
+    const loops = (call.match(/"segments":\[/g) ?? []).length;
+    if (loops === 0) continue;
+    // An `as:'wire'` call always carries exactly one contour (codegen emits one
+    // per open loop); a call without it is the whole closed group.
+    if (/as: "wire"/.test(call)) open += loops;
+    else closed += loops;
   }
-  if (c) rows.push(`${d}  contours=${c} geometricallyClosed=${gc} geometricallyOpen=${go}`);
-  contours += c;
-  geoClosed += gc;
-  geoOpen += go;
+  if (closed + open > 0) rows.push(`${d}  closed=${closed} open=${open}`);
+  closedLoops += closed;
+  openLoops += open;
 }
+
 console.log(rows.join('\n'));
+const total = closedLoops + openLoops;
 console.log(
-  `\n=== contours=${contours}  geometricallyClosed=${geoClosed}  geometricallyOpen=${geoOpen}  openShare=${contours ? ((geoOpen / contours) * 100).toFixed(2) : '0'}% ===`,
+  `\n=== contours=${total}  closed=${closedLoops}  open=${openLoops}  openShare=${total ? ((openLoops / total) * 100).toFixed(2) : '0'}% ===`,
 );

@@ -1037,3 +1037,115 @@ describe('M5 codegen', () => {
     expect(r.code).not.toContain('::body-chain-base::');
   });
 });
+
+/**
+ * A1 follow-up (2026-09-29) — a Draft drawing emits ONE shape per KIND.
+ *
+ * Closed contours are profiles (`cad.sketchOnPlane` → `makeFace`, what
+ * `cad.extrude` consumes); open contours are paths (a `cad.sweep` spine), and
+ * OCCT refuses to build a face from an open wire —
+ * `CONSTRUCTION_FAILED: makeFace: construction failed`, measured on Chair's two
+ * `Shape2DView` projections (17 open contours each). They therefore travel as
+ * `as:'wire'`, and a drawing that carries both kinds is compounded.
+ */
+describe('A1 Draft emission — closed contours are faces, open contours are wires', () => {
+  /** A Draft 2D object with a frozen Shape member (the A1 target class). */
+  function draftDoc(): FcstdDocument {
+    return {
+      objects: [simpleObj('Part::Part2DObjectPython', 'Clone2D', { Shape: { file: 'Clone2D.Shape.brp' } })],
+      typeIndex: new Map(),
+      meta: new Map(),
+    };
+  }
+
+  /** Square loop (closed). */
+  function square(x: number, y: number, s: number) {
+    return {
+      closed: true,
+      segments: [
+        { kind: 'line' as const, x1: x, y1: y, x2: x + s, y2: y },
+        { kind: 'line' as const, x1: x + s, y1: y, x2: x + s, y2: y + s },
+        { kind: 'line' as const, x1: x + s, y1: y + s, x2: x, y2: y + s },
+        { kind: 'line' as const, x1: x, y1: y + s, x2: x, y2: y },
+      ],
+    };
+  }
+
+  /** Open two-segment path (a sweep spine, as Kitchen_cabinet_base stores it). */
+  function path(x: number, y: number) {
+    return {
+      closed: false,
+      segments: [
+        { kind: 'line' as const, x1: x, y1: y, x2: x + 10, y2: y },
+        { kind: 'line' as const, x1: x + 10, y1: y, x2: x + 10, y2: y + 20 },
+      ],
+    };
+  }
+
+  function gen(contours: unknown[]) {
+    return generateModel(
+      draftDoc(), new Map(), NO_CONTOURS, 't',
+      undefined, undefined, undefined, undefined, undefined, undefined,
+      new Map([['Clone2D', { contours }]]) as never,
+    );
+  }
+
+  it('a uniformly closed drawing is ONE face call (unchanged path, nesting intact)', () => {
+    const r = gen([square(0, 0, 10), square(20, 0, 5)]);
+    const sk = r.calls.filter((c) => c.op === 'cad.sketchOnPlane');
+    expect(sk).toHaveLength(1);
+    // No `as` → the op defaults to 'face'.
+    expect(sk[0]!.params!.as).toBeUndefined();
+    // A single part IS the object — no intermediate variable, no compound.
+    expect(sk[0]!.out).toBe('Clone2D');
+    expect(r.calls.some((c) => c.op === 'cad.compound')).toBe(false);
+    expect(r.code).not.toContain('as: "wire"');
+    expect(r.objects.find((o) => o.name === 'Clone2D')!.reason).toBe('draft-draw(2 closed, 0 open)');
+  });
+
+  it('a uniformly open drawing is ONE wire call (the object IS the spine)', () => {
+    const r = gen([path(0, 0)]);
+    const sk = r.calls.filter((c) => c.op === 'cad.sketchOnPlane');
+    expect(sk).toHaveLength(1);
+    expect(sk[0]!.params!.as).toBe('wire');
+    expect(sk[0]!.out).toBe('Clone2D');
+    expect(r.calls.some((c) => c.op === 'cad.compound')).toBe(false);
+    expect(r.code).toContain('as: "wire"');
+  });
+
+  it('a mixed drawing compounds the face group with one wire per open contour', () => {
+    const r = gen([square(0, 0, 10), path(0, 0), path(50, 0)]);
+    const sk = r.calls.filter((c) => c.op === 'cad.sketchOnPlane');
+    expect(sk).toHaveLength(3);
+    // GOTCHA: the closed contours stay in ONE call. Splitting them per contour
+    // would make every hole a filled face (hole/island nesting lives inside the
+    // single call's `organiseBlueprints` pass).
+    expect(sk[0]!.params!.as).toBeUndefined();
+    expect(sk[1]!.params!.as).toBe('wire');
+    expect(sk[2]!.params!.as).toBe('wire');
+    const comp = r.calls.find((c) => c.op === 'cad.compound');
+    expect(comp).toBeDefined();
+    expect(comp!.out).toBe('Clone2D');
+    // GOTCHA: members travel as LEXICAL VAR NAMES in `params.members`, and the
+    // `inputs` registration is what keeps them consumed — without it `lower()`
+    // sweeps the part variables into the root aggregate a second time.
+    expect(comp!.params!.members).toEqual(sk.map((c) => c.out));
+    expect(comp!.inputs).toEqual(sk.map((c) => c.out));
+    expect(comp!.noPositionalArgs).toBe(true);
+    expect(r.code).toContain('cad.compound({ members: [');
+    // The parts are consumed, so the object stays the only root: no `assembly`.
+    expect(r.code).not.toContain('let assembly');
+  });
+
+  it('every Draft emission keeps the object Placement as the lift frame', () => {
+    const r = generateModel(
+      draftDoc(), new Map(), NO_CONTOURS, 't',
+      new Map([['Clone2D', { p: [0, 0, 5] as [number, number, number], q: [0, 0, 0, 1] as [number, number, number, number] }]]),
+      undefined, undefined, undefined, undefined, undefined,
+      new Map([['Clone2D', { contours: [square(0, 0, 10), path(0, 0)] }]]) as never,
+    );
+    for (const c of r.calls.filter((c) => c.op === 'cad.sketchOnPlane')) {
+      expect(c.params!.plane).toEqual({ origin: [0, 0, 5], normal: [0, 0, 1], xAxis: [1, 0, 0] });
+    }
+  });
+});
