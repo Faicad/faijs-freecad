@@ -74,11 +74,11 @@ describe('fcstd container (M2)', () => {
     if (!isOk(archive)) expect(archive.error.kind).toBe('no-document-xml');
   });
 
-  it('builds .fai.zip with byte-exact freecad/ shadow (V1)', () => {
+  it('builds .fai.zip with byte-exact freecad/ shadow (V1)', async () => {
     const source = unpackFcstd(makeFakeFcstd());
     expect(isOk(source)).toBe(true);
     if (!isOk(source)) return;
-    const built = buildFaiZip(source.value, 'fake.FCStd', DEFAULT_MODELS);
+    const built = await buildFaiZip(source.value, 'fake.FCStd', DEFAULT_MODELS);
     expect(built.error).toBeUndefined();
     if (!built.result) return;
     // re-unpack the produced container and verify shadow byte equality
@@ -93,10 +93,10 @@ describe('fcstd container (M2)', () => {
     expect(shadowPaths.length).toBe(source.value.members.size);
   });
 
-  it('ledger has a disposition for every object (V3)', () => {
+  it('ledger has a disposition for every object (V3)', async () => {
     const source = unpackFcstd(makeFakeFcstd());
     if (!isOk(source)) return;
-    const built = buildFaiZip(source.value, 'fake.FCStd', DEFAULT_MODELS);
+    const built = await buildFaiZip(source.value, 'fake.FCStd', DEFAULT_MODELS);
     if (!built.result) return;
     const names = built.result.mapping.objects.map((o) => o.name).sort();
     expect(names).toEqual(['Box', 'Origin', 'Sketch']);
@@ -112,10 +112,10 @@ describe('fcstd container (M2)', () => {
   // D-A: the FCStd port output is BREP-chain-only; the manifest must declare
   // it so executors know `--mode brep` is required (never rely on `auto`).
   // Unified format v3: format === 3, models[] with main entry.
-  it('manifest declares format 3, models[] and requiresBrep: true', () => {
+  it('manifest declares format 3, models[] and requiresBrep: true', async () => {
     const source = unpackFcstd(makeFakeFcstd());
     if (!isOk(source)) return;
-    const built = buildFaiZip(source.value, 'fake.FCStd', DEFAULT_MODELS);
+    const built = await buildFaiZip(source.value, 'fake.FCStd', DEFAULT_MODELS);
     if (!built.result) return;
     const round = unzipSync(built.result.zip);
     const manifest = JSON.parse(Buffer.from(round['manifest.json']!).toString('utf-8'));
@@ -130,10 +130,10 @@ describe('fcstd container (M2)', () => {
   // G7 (M11.3 / D-B): assets/ entries must exactly match the asset artifacts
   // recorded in mapping.json — a .brp copied without a ledger entry (or the
   // reverse) would break V3 zero-silent-loss accounting.
-  it('assets/ members correspond 1:1 with mapping artifacts (G7)', () => {
+  it('assets/ members correspond 1:1 with mapping artifacts (G7)', async () => {
     const source = unpackFcstd(makeFakeFcstd());
     if (!isOk(source)) return;
-    const built = buildFaiZip(source.value, 'fake.FCStd', DEFAULT_MODELS);
+    const built = await buildFaiZip(source.value, 'fake.FCStd', DEFAULT_MODELS);
     if (!built.result) return;
     const round = unzipSync(built.result.zip);
     const assetMembers = Object.keys(round).filter((p) => p.startsWith('assets/')).sort();

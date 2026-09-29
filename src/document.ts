@@ -5,8 +5,8 @@
  * (objects + properties); `<Objects>` is only a type index. Transient
  * `_Property` elements are skipped.
  */
-import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
 import { err, ok, type Result } from '@faicad/faijs/api/result';
+import { parseXmlDocument, serializeXmlNode } from '@faicad/faijs/api/xml-dom';
 
 /** One parsed XML node from Document.xml: a property element (or nested value element) with its children. */
 export interface FcstdProperty {
@@ -62,19 +62,16 @@ function firstElementChild(el: Element): Element | undefined {
   return undefined;
 }
 
-function serialize(el: Element): string {
-  // @xmldom/xmldom ships its own Node/Element types that conflict with lib: DOM;
-  // the parser/serializer boundary is the only place the two universes meet.
-  type SerNode = Parameters<XMLSerializer['serializeToString']>[0];
-  return new XMLSerializer().serializeToString(el as unknown as SerNode);
+function serialize(el: Element): Promise<string> {
+  return serializeXmlNode(el);
 }
 
-function parseProperty(propEl: Element): FcstdProperty {
+async function parseProperty(propEl: Element): Promise<FcstdProperty> {
   const children: FcstdProperty[] = [];
   for (let c = propEl.firstChild; c; c = c.nextSibling) {
     if (c.nodeType === 1) {
       const child = c as Element;
-      children.push(parseProperty(child));
+      children.push(await parseProperty(child));
     }
   }
   const valueEl = firstElementChild(propEl);
@@ -83,7 +80,7 @@ function parseProperty(propEl: Element): FcstdProperty {
     type: propEl.getAttribute('type') ?? '',
     tagName: propEl.tagName,
     attributes: attrs(propEl),
-    valueXml: valueEl ? serialize(valueEl) : undefined,
+    valueXml: valueEl ? await serialize(valueEl) : undefined,
     valueText: valueEl?.textContent ?? propEl.textContent ?? '',
     children,
   };
@@ -97,11 +94,10 @@ function parseProperty(propEl: Element): FcstdProperty {
  * @param xml raw Document.xml content
  * @returns the parsed object graph, or an xml ParseError
  */
-export function parseDocumentXml(xml: string): Result<FcstdDocument, ParseError> {
+export async function parseDocumentXml(xml: string): Promise<Result<FcstdDocument, ParseError>> {
   let doc: Document;
   try {
-    // xmldom's Document type conflicts with lib: DOM; cast across the boundary.
-    doc = new DOMParser().parseFromString(xml, 'application/xml') as unknown as Document;
+    doc = await parseXmlDocument(xml);
   } catch (e) {
     return err({ kind: 'xml', message: `Document.xml parse failed: ${e instanceof Error ? e.message : String(e)}` });
   }
@@ -148,11 +144,11 @@ export function parseDocumentXml(xml: string): Result<FcstdDocument, ParseError>
                 if (q.nodeType !== 1) continue;
                 const qe = q as Element;
                 if (qe.tagName === '_Property') continue; // transient
-                const prop = parseProperty(qe);
+                const prop = await parseProperty(qe);
                 if (prop.name) properties.set(prop.name, prop);
               }
             } else if (pe.tagName !== '_Property') {
-              const prop = parseProperty(pe);
+              const prop = await parseProperty(pe);
               if (prop.name) properties.set(prop.name, prop);
             }
           }
@@ -162,7 +158,7 @@ export function parseDocumentXml(xml: string): Result<FcstdDocument, ParseError>
       }
       default: {
         // document meta properties (Creator, Uuid, LastModifiedDate, ...)
-        const prop = parseProperty(el);
+        const prop = await parseProperty(el);
         if (prop.name) meta.set(prop.name, prop);
       }
     }

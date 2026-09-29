@@ -147,7 +147,7 @@ export async function convertFcstdFile(input: string, opts?: ConvertOptions): Pr
   if (!isOk(unpacked)) return fail(`unpack failed: ${JSON.stringify(unpacked.error)}`);
   const xml = memberText(unpacked.value, 'Document.xml');
   if (xml === undefined) return fail('Document.xml missing');
-  const doc = parseDocumentXml(xml);
+  const doc = await parseDocumentXml(xml);
   if (!isOk(doc)) return fail(`parse failed: ${doc.error.message}`);
 
   // M3: solve every sketch (same pipeline as the dev script)
@@ -380,7 +380,7 @@ export async function convertFcstdFile(input: string, opts?: ConvertOptions): Pr
   }
 
   // M2: container with shadow, then inject model/ + updated mapping
-  const built = buildFaiZip(
+  const built = await buildFaiZip(
     unpacked.value,
     baseName + '.FCStd',
     // unified format v3: main aggregate + one model per Body (§5 Phase 3.2)

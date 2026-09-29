@@ -48,14 +48,14 @@ const FREECAD_SHADOW_PREFIX = 'freecad/';
  *   (main + one per Body — the caller injects the model scripts after this)
  * @returns the built archive or an error message
  */
-export function buildFaiZip(
+export async function buildFaiZip(
   source: FcstdArchive,
   sourceFileName: string,
   models: ContainerModel[],
-): { result?: FaiZipResult; error?: string } {
+): Promise<{ result?: FaiZipResult; error?: string }> {
   const xml = memberText(source, 'Document.xml');
   if (xml === undefined) return { error: 'Document.xml missing from source archive' };
-  const parsed = parseDocumentXml(xml);
+  const parsed = await parseDocumentXml(xml);
   if (!isOk(parsed)) return { error: parsed.error.message };
   const doc: FcstdDocument = parsed.value;
 
