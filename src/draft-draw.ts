@@ -110,8 +110,52 @@ export interface DraftArcSegment {
   y2: number;
 }
 
+/**
+ * Parametric-curve segment (`ProfileSplineSeg`-compatible) — the NURBS control
+ * data of one edge, read straight from the kernel.
+ *
+ * This is what keeps a source that IS a parametric curve parametric. Before it,
+ * every `bezier` / `bspline` edge fell into the per-edge tessellation fallback
+ * and reached the wire as a polyline; measured across the corpus, 2279 Draft
+ * edges over 20 documents (1339 `bezier` from Draft text outlines and `BezCurve`,
+ * 912 `bspline` from projected views) were going through that sampler.
+ *
+ * Both a Bézier and a B-spline travel in this one shape: a Bézier IS a clamped
+ * B-spline, and the platform builds both from the same record.
+ *
+ * ⚠️ The NURBS data describes the WHOLE basis curve, while `first`/`last` are
+ * the edge's TRIM on that curve's parameter axis. Measured on a parametric-heavy
+ * file: 36 of 150 edges are trimmed — carrying the curve without the trim hands
+ * the wire an edge that runs past its neighbour's start.
+ */
+export interface DraftSplineSegment {
+  kind: 'spline';
+  /** Polynomial degree. */
+  degree: number;
+  /** Flat control points `[x, y, x, y, …]` in the drawing frame. */
+  poles: number[];
+  /** Distinct knot values, parallel to `multiplicities`. */
+  knots: number[];
+  /** Multiplicity of each entry in `knots`. */
+  multiplicities: number[];
+  /** True for a periodic (wrap-around) curve. */
+  periodic: boolean;
+  /** Per-pole weights; omitted for a non-rational curve. */
+  weights?: number[];
+  /** Trim start on the basis-curve parameter axis. */
+  first: number;
+  /** Trim end on the basis-curve parameter axis. */
+  last: number;
+  /** Exact start point (the kernel's own `curvePointAtParam(first)`), for chaining. */
+  x1: number;
+  y1: number;
+  /** Exact end point, for chaining. */
+  x2: number;
+  y2: number;
+}
+
 /** One emitted 2D contour segment. */
-export type DraftSegment = DraftLineSegment | DraftArcSegment;
+export type DraftSegment = DraftLineSegment | DraftArcSegment | DraftSplineSegment;
 
 /**
  * One wire edge as the extractor reads it: exact 2D endpoints plus the segments
@@ -156,6 +200,22 @@ interface DraftKernel {
   curveParameters: (e: number) => { first: number; last: number };
   curvePointAtParam: (e: number, p: number) => { x: number; y: number; z: number };
   curveIsClosed: (e: number) => boolean;
+  /**
+   * NURBS control data of the edge's basis curve. GOTCHA: it THROWS (it is not a
+   * nullable getter) for the analytic kinds — callers guard, they do not merely
+   * null-check.
+   */
+  getNurbsCurveData: (e: number) =>
+    | {
+        degree: number;
+        rational: boolean;
+        periodic: boolean;
+        knots: number[];
+        multiplicities: number[];
+        poles: number[];
+        weights: number[];
+      }
+    | null;
   wireframe: (s: number, d: number) => { points: Float32Array; edgeGroups: number[] };
   release: (s: number) => void;
 }
@@ -267,7 +327,8 @@ export function lineSegment(a: Point2, b: Point2): DraftLineSegment {
  * @returns its first point.
  */
 export function segmentStart(s: DraftSegment): Point2 {
-  return s.kind === 'line' ? [s.x1, s.y1] : arcPoint(s.cx, s.cy, s.radius, s.startAngle);
+  if (s.kind === 'line' || s.kind === 'spline') return [s.x1, s.y1];
+  return arcPoint(s.cx, s.cy, s.radius, s.startAngle);
 }
 
 /**
@@ -276,7 +337,8 @@ export function segmentStart(s: DraftSegment): Point2 {
  * @returns its last point.
  */
 export function segmentEnd(s: DraftSegment): Point2 {
-  return s.kind === 'line' ? [s.x2, s.y2] : arcPoint(s.cx, s.cy, s.radius, s.endAngle);
+  if (s.kind === 'line' || s.kind === 'spline') return [s.x2, s.y2];
+  return arcPoint(s.cx, s.cy, s.radius, s.endAngle);
 }
 
 /**
@@ -287,10 +349,44 @@ export function segmentEnd(s: DraftSegment): Point2 {
  */
 export function reverseSegment(s: DraftSegment): DraftSegment {
   if (s.kind === 'line') return { kind: 'line', x1: s.x2, y1: s.y2, x2: s.x1, y2: s.y1 };
+  if (s.kind === 'spline') return reverseSplineSegment(s);
   return {
     kind: 'arc', cx: s.cx, cy: s.cy, radius: s.radius,
     startAngle: s.endAngle, endAngle: s.startAngle, ccw: !s.ccw,
     x1: s.x2, y1: s.y2, x2: s.x1, y2: s.y1,
+  };
+}
+
+/**
+ * The same spline traversed backwards, EXACTLY.
+ *
+ * A reversed B-spline is a B-spline: reverse the control polygon, reverse and
+ * reflect the knot vector about the domain's midpoint, reverse the
+ * multiplicities and weights, and reflect the trim range the same way. Nothing
+ * is approximated — which matters because the chain walk reverses an edge
+ * whenever its END (`e.b`) is what meets the chain's tail, and a spline cannot
+ * be "snapped" back into agreement like a line or an arc.
+ */
+function reverseSplineSegment(s: DraftSplineSegment): DraftSplineSegment {
+  const poles: number[] = [];
+  for (let i = s.poles.length - 2; i >= 0; i -= 2) poles.push(s.poles[i]!, s.poles[i + 1]!);
+  const d0 = s.knots[0]!;
+  const d1 = s.knots[s.knots.length - 1]!;
+  // `d1 - (k - d0)` keeps the domain ends exact: k = d0 maps to d1 with no
+  // rounding, so the rebuilt curve spans the same [d0, d1] the trim is expressed in.
+  const reflect = (p: number): number => d1 - (p - d0);
+  return {
+    ...s,
+    poles,
+    knots: [...s.knots].reverse().map(reflect),
+    multiplicities: [...s.multiplicities].reverse(),
+    ...(s.weights ? { weights: [...s.weights].reverse() } : {}),
+    first: reflect(s.last),
+    last: reflect(s.first),
+    x1: s.x2,
+    y1: s.y2,
+    x2: s.x1,
+    y2: s.y1,
   };
 }
 
@@ -336,6 +432,11 @@ function arcSweep(s: DraftArcSegment): number {
  * @returns the quantized, snapped segment.
  */
 function quantizeAndSnap(raw: DraftSegment, prevEnd: Point2 | undefined, tol: number): DraftSegment {
+  // A spline's control data IS the curve: rounding poles to 1e-6 would emit a
+  // different curve, and its endpoint cannot be nudged onto a neighbour like a
+  // line's or an arc's can. It passes through exact — see `snapContour` for why
+  // no other segment in such a contour is rounded either.
+  if (raw.kind === 'spline') return raw;
   if (raw.kind === 'line') {
     const start = prevEnd ? nearest(prevEnd, [q(raw.x1), q(raw.y1)], tol) : ([q(raw.x1), q(raw.y1)] as Point2);
     return { kind: 'line', x1: start[0], y1: start[1], x2: q(raw.x2), y2: q(raw.y2) };
@@ -369,6 +470,16 @@ function nearest(target: Point2, own: Point2, tol: number): Point2 {
  * @returns the emitted-precision segments.
  */
 export function snapContour(segments: readonly DraftSegment[], closed: boolean, tol: number): DraftSegment[] {
+  // A contour containing a spline is NOT quantized as a whole.
+  //
+  // Quantizing to 1e-6 is what makes independently-read line/arc parameters agree
+  // exactly, but it is only safe when every segment can be re-derived from its own
+  // rounded parameters. A spline cannot, so rounding the OTHER segments while it
+  // keeps full precision would leave sub-micron gaps at its seams — above OCC's
+  // `Precision::Confusion` of 1e-7, i.e. a wire that does not sew. Left unrounded,
+  // every endpoint is the kernel's own value (measured round-trip deviation
+  // ~1e-11 mm), which is far inside the sewing tolerance.
+  if (segments.some((s) => s.kind === 'spline')) return [...segments];
   const out: DraftSegment[] = [];
   let prevEnd: Point2 | undefined;
   for (const raw of segments) {
@@ -390,6 +501,10 @@ export function snapContour(segments: readonly DraftSegment[], closed: boolean, 
 /** Re-aim a segment's end at `target`, preserving a full circle's fullness. */
 function forceEndTo(seg: DraftSegment, target: Point2): DraftSegment {
   if (seg.kind === 'line') return { kind: 'line', x1: seg.x1, y1: seg.y1, x2: target[0], y2: target[1] };
+  // A spline's end point is a function of its control data; moving it would move
+  // the curve. Its endpoint is already the kernel's own value, and the rest of
+  // the contour was left unrounded for exactly this reason — so leave it be.
+  if (seg.kind === 'spline') return seg;
   if (isFullCircle(seg)) return seg;
   const endAngle = Math.atan2(target[1] - seg.cy, target[0] - seg.cx);
   const e = arcPoint(seg.cx, seg.cy, seg.radius, endAngle);
@@ -482,7 +597,17 @@ export function chainDraftEdges(edges: readonly DraftEdge[], tol: number): Draft
     // `Circle` object (a one-edge, one-segment contour) — the object would then
     // rebuild to nothing and fall back to a dead shape-asset import.
     let length = 0;
-    for (const s of raw) length += s.kind === 'line' ? Math.hypot(s.x2 - s.x1, s.y2 - s.y1) : s.radius * arcSweep(s);
+    for (const s of raw) {
+      if (s.kind === 'line') length += Math.hypot(s.x2 - s.x1, s.y2 - s.y1);
+      else if (s.kind === 'arc') length += s.radius * arcSweep(s);
+      // A spline's control polygon bounds its arc length from above, so it is a
+      // sound non-degeneracy proxy for this guard (the exact length is not needed).
+      else {
+        for (let i = 2; i + 1 < s.poles.length; i += 2) {
+          length += Math.hypot(s.poles[i]! - s.poles[i - 2]!, s.poles[i + 1]! - s.poles[i - 1]!);
+        }
+      }
+    }
     if (length <= tol) continue;
     // Closure is a property of the EMITTED geometry, NOT of how many edges the
     // walk happened to visit. Two measured counter-examples killed the original
@@ -601,7 +726,48 @@ function readEdge(kernel: DraftKernel, edge: number): DraftEdge | undefined {
     }
   }
 
-  // Kinds the platform cannot express analytically yet (`bspline`, `ellipse`, …):
+  // Parametric kinds the platform expresses analytically since A2. A Bézier and a
+  // B-spline share one branch deliberately: a Bézier IS a clamped B-spline, and
+  // the kernel reports both as the same NURBS record.
+  if (kind === 'bezier' || kind === 'bspline') {
+    let nr: ReturnType<DraftKernel['getNurbsCurveData']> = null;
+    try {
+      nr = kernel.getNurbsCurveData(edge);
+    } catch {
+      // GOTCHA: the getter THROWS for the analytic kinds; a `curveType` of
+      // `bezier` should never land here, but a kernel that reclassifies an
+      // offset curve would — fall through to the per-edge tessellation.
+      nr = null;
+    }
+    if (nr && nr.poles.length >= 6) {
+      const poles: number[] = [];
+      for (let i = 0; i + 2 < nr.poles.length; i += 3) poles.push(nr.poles[i]!, nr.poles[i + 1]!);
+      return {
+        a,
+        b,
+        segments: [{
+          kind: 'spline',
+          degree: nr.degree,
+          poles,
+          knots: nr.knots,
+          multiplicities: nr.multiplicities,
+          periodic: nr.periodic,
+          ...(nr.rational ? { weights: nr.weights } : {}),
+          // The NURBS record is the WHOLE basis curve; `curveParameters` is this
+          // edge's trim on it (measured: 36 of 150 parametric edges in one file
+          // are trimmed, so dropping this is not an edge case).
+          first: params.first,
+          last: params.last,
+          x1: a[0],
+          y1: a[1],
+          x2: b[0],
+          y2: b[1],
+        }],
+      };
+    }
+  }
+
+  // Kinds the platform cannot express analytically yet (`ellipse`, `hyperbola`, …):
   // tessellate THIS edge only, never the whole object.
   let segs: DraftSegment[] = [];
   try {
