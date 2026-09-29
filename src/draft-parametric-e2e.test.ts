@@ -153,8 +153,11 @@ const CASES: Case[] = [
     paramEdges: 8,
     // The failing selectors are inside the imported Body modules; ES imports are
     // evaluated before main's first statement, so this leg proves nothing about
-    // the Draft splines and is pinned as a blocker only.
-    expectRunError: /callee: fillet\): edgeRef: edge ordinal 49 out of range \[1, 48\]/,
+    // the Draft splines and is pinned as a blocker only. The error is wrapped
+    // with `dependency module failed at line N:` because the fillet callee lives
+    // in an imported module — tolerate that wrapping while still pinning the
+    // probe-verified A2-independent blocker (`edgeRef: edge ordinal 49 …`).
+    expectRunError: /callee: fillet\):(?: dependency module failed at line \d+:)? edgeRef: edge ordinal 49 out of range \[1, 48\]/,
     runBlocker: 'blocked in an imported Body module — rebuilt body has 48 edges, the document asks for Edge49 (A2-independent, probe-verified)',
   },
   {
