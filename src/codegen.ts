@@ -325,7 +325,7 @@ export function generateModel(
       // the same planegcs backend. The old solved-contour → `cad.profile`
       // emission becomes the A5 fallback only.
       const inputs = sketchInputs?.get(name);
-      if (inputs) {
+      if (inputs && inputs.geoms.length > 0) {
         const v = emitVar(name);
         variables.set(name, v);
         // A3 (D3 (b), 2026-09-28): the sketch's (attachment-resolved) Placement
@@ -394,7 +394,13 @@ export function generateModel(
         // solved`, which lies about the cause. Give the L0-but-no-loop case
         // its own explicit reason; keep the old fallbacks for genuinely
         // missing verdicts/contours.
-        const reason = verdict?.reason
+        // P2-1 (2026-09-28): a sketch with canonical inputs but ZERO geoms
+        // (all construction / fully trimmed) used to fall through here AND,
+        // before that, reach the parametric emission — the run-time op then
+        // threw E_SKETCHC_NO_GEOMS. Name the cause explicitly instead.
+        const reason = inputs && inputs.geoms.length === 0
+          ? 'sketch-empty-geoms'
+          : verdict?.reason
           ?? (verdict?.level === 'L0' && contours && contours.length === 0
             ? 'sketch-solved-no-closed-loop'
             : contours ? 'sketch-not-solved' : 'sketch-no-contours');

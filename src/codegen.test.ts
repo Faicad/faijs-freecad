@@ -275,6 +275,27 @@ describe('M5 codegen', () => {
     expect(sketch).toMatchObject({ disposition: 'baked', reason: 'sketch-solved-no-closed-loop' });
   });
 
+  // P2-1 (2026-09-28): a sketch with canonical inputs but ZERO geoms (all
+  // construction / fully trimmed) must NOT reach the parametric emission —
+  // the run-time op throws E_SKETCHC_NO_GEOMS on empty geoms (see the GOTCHA
+  // in packages/sketch/src/op-entry-schema-gotcha.test.ts). The codegen bakes
+  // it with an explicit `sketch-empty-geoms` reason instead.
+  it('bakes a sketch with canonical inputs but zero geoms as sketch-empty-geoms (no cad.sketch emission)', () => {
+    const doc: FcstdDocument = {
+      objects: [
+        simpleObj('Sketcher::SketchObject', 'Sketch', {}),
+        simpleObj('PartDesign::Pad', 'Pad', { Profile: { value: 'Sketch' }, Length: { value: '10' } }),
+      ],
+      typeIndex: new Map(),
+      meta: new Map(),
+    };
+    const inputs = new Map([['Sketch', { geoms: [], constraints: [] }]]);
+    const r = generateModel(doc, new Map(), NO_CONTOURS, 't', undefined, undefined, undefined, undefined, undefined, inputs);
+    const sketch = r.objects.find((o) => o.name === 'Sketch');
+    expect(sketch).toMatchObject({ disposition: 'baked', reason: 'sketch-empty-geoms' });
+    expect(r.code).not.toContain('cad.sketch(');
+  });
+
   it('groups multiple roots via cad.compound', () => {
     const doc: FcstdDocument = {
       objects: [simpleObj('Part::Box', 'A', {}), simpleObj('Part::Box', 'B', {})],
