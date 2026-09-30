@@ -137,15 +137,14 @@ const CASES: Case[] = [
   {
     rel: join('Industrial Design', 'Shelf', 'Cloud_shelf.FCStd'),
     label: 'Cloud_shelf — Draft ShapeString, 76 bezier + 57 line',
-    paramEdges: 76,
-    // The spline lift (s4 sketchOnPlane), the extrude of that profile (s5) and the
-    // boolean consuming it (s6) all run; execution stops at s7 `cad.fillet`,
-    // because `Cut` = subtract(imported BREP, extruded ShapeString) and edge 1's
-    // adjacent face carries no role lineage. A2-independent: the A1 tessellated
-    // emission fails at the same statement with the same message
-    // (`scripts/probe-a2-fillet-baseline.ts`).
-    expectRunError: /callee: fillet\): edgeRef: adjacent face ordinal 1 has no role lineage/,
-    runBlocker: 'blocked at s7 cad.fillet — boolean-of-imported-BREP naming gap (A2-independent, probe-verified)',
+    paramEdges: 76, // GOTCHA: only bezier/bspline edges emit as spline; the 57 line edges stay as line segments
+    // 2026-09-30 promoted from KNOWN BLOCKER to a full-run assertion: the old
+    // blocker was `edgeRef: adjacent face ordinal 1 has no role lineage` at s7
+    // `cad.fillet(Cut, …)` — `Cut` is `subtract(imported BREP, extruded
+    // ShapeString)` and import_brep was a bare async function, so the defineOp
+    // wrapper never registered the part-key roleTable and the imported faces
+    // had no role lineage. Fixing that (import-brep.ts GOTCHA) unblocked the
+    // whole product end to end.
   },
   {
     rel: join('Industrial Design', 'Shelf', 'Batman shelf.FCStd'),
