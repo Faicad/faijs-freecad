@@ -6,27 +6,30 @@
  * sha256 equality (V1). Baked geometry comes from the ZIP's .brp members
  * directly (M2.3 — no FreeCAD runtime involved). Unit normalization (D7/M2.4):
  * FCStd internal storage is mm, matching faijs; the units field records this.
+ *
+ * The container format itself is owned by core (`@faicad/faijs/io/fai-zip`):
+ * `createManifest` is the single manifest constructor and `writeZipEntries` the
+ * single ZIP writer. This function deliberately does NOT use `writeContainer`:
+ * it emits an *intermediate* container whose `model/**` scripts are injected
+ * afterwards by the caller (`convert.ts`), which `writeContainer`'s
+ * "every entry must be delivered" assertion forbids — and that assertion must
+ * not be relaxed, because it is what keeps a shipped container reconstructable.
  */
-import { zipSync, strToU8 } from 'fflate';
+import { createManifest, encodeMemberText, type ContainerManifest, type ContainerModel } from '@faicad/faijs/io/fai-zip';
+import { writeZipEntries } from '@faicad/faijs/io';
 import { createHash } from 'node:crypto';
 import { isOk } from '@faicad/faijs/api/result';
 import type { FcstdArchive } from './unpack.js';
 import { memberText } from './unpack.js';
 import { parseDocumentXml, type FcstdDocument } from './document.js';
-import {
-  buildManifest,
-  initialDisposition,
-  type ContainerModel,
-  type FaiMapping,
-  type ObjectMappingEntry,
-} from './container.js';
+import { initialDisposition, type FaiMapping, type ObjectMappingEntry } from './container.js';
 
-/** Build output: the .fai.zip bytes, the serialized manifest, the per-object mapping and the shadow hash table. */
+/** Build output: the .fai.zip bytes, the written manifest, the per-object mapping and the shadow hash table. */
 export interface FaiZipResult {
   /** the produced .fai.zip archive bytes */
   zip: Uint8Array;
-  /** serialized manifest.json content */
-  manifest: unknown;
+  /** the manifest written into the container */
+  manifest: ContainerManifest;
   mapping: FaiMapping;
   /** sha256 verification table for the freecad/ shadow (V1) */
   shadowHashes: Record<string, { source: string; shadow: string }>;
@@ -59,7 +62,7 @@ export async function buildFaiZip(
   if (!isOk(parsed)) return { error: parsed.error.message };
   const doc: FcstdDocument = parsed.value;
 
-  const out: Record<string, Uint8Array | string> = {};
+  const out: Record<string, Uint8Array> = {};
   const shadowHashes: Record<string, { source: string; shadow: string }> = {};
 
   // M2.2 — byte-exact freecad/ shadow of ALL members (including Document.xml)
@@ -89,7 +92,6 @@ export async function buildFaiZip(
   }
 
   const mapping: FaiMapping = { objects: [] };
-  const usedAssets = new Set<string>();
   for (const obj of doc.objects) {
     const entry: ObjectMappingEntry = {
       name: obj.name,
@@ -105,19 +107,28 @@ export async function buildFaiZip(
       const assetPath = `assets/${brp}`;
       out[assetPath] = bytes;
       entry.artifacts.push(assetPath);
-      usedAssets.add(brp);
     }
     mapping.objects.push(entry);
   }
 
   // M2.4 — units: FCStd stores mm internally; faijs contract is mm. No
   // scaling is applied; manifest.units records the normalized unit (D7).
-  // fflate requires Uint8Array values — strings must go through strToU8.
-  out['manifest.json'] = strToU8(JSON.stringify(buildManifest(doc, sourceFileName, readProgramVersion(doc), models), null, 2));
-  out['mapping.json'] = strToU8(JSON.stringify(mapping, null, 2));
+  const manifest = createManifest({
+    models,
+    meta: {
+      source: {
+        file: sourceFileName,
+        programVersion: readProgramVersion(doc),
+        schemaVersion: Number(doc.meta.get('SchemaVersion')?.valueText ?? 4),
+      },
+      requiresBrep: true,
+    },
+  });
+  out['manifest.json'] = encodeMemberText(JSON.stringify(manifest, null, 2));
+  out['mapping.json'] = encodeMemberText(JSON.stringify(mapping, null, 2));
 
-  const zip = zipSync(out as Record<string, Uint8Array>, { level: 6 });
-  return { result: { zip, manifest: out['manifest.json'], mapping, shadowHashes } };
+  const zip = writeZipEntries(out);
+  return { result: { zip, manifest, mapping, shadowHashes } };
 }
 
 function readProgramVersion(doc: FcstdDocument): string {
@@ -135,6 +146,3 @@ function collectBrpRefs(xml: string, out: string[]): void {
     if (!out.includes(name)) out.push(name);
   }
 }
-
-/** Re-export strToU8 for callers that need to embed text members. */
-export { strToU8 };

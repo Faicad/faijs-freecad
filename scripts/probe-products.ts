@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFil
 import { tmpdir } from 'node:os';
 import { basename, isAbsolute, join } from 'node:path';
 import { convertFcstdFile } from '../src/convert.js';
-import { openContainer } from '../src/container-read.js';
+import { openContainer } from '@faicad/faijs/io/fai-zip';
 import { cliRun } from '@faicad/faijs/node';
 import { createApiNamespace } from '@faicad/faijs';
 import { mergeSketchNamespace, installSketchSolver } from '@faicad/faijs-sketch';

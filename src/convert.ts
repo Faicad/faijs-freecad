@@ -37,7 +37,8 @@ import type { Placement } from './placement.js';
 import { effectivePlacement } from './attachment.js';
 import { buildFaiZip } from './build-fai-zip.js';
 import { isOk } from '@faicad/faijs/api/result';
-import { zipSync, unzipSync, strToU8 } from 'fflate';
+import { unzipSync, strToU8 } from 'fflate';
+import { writeZipEntries } from '@faicad/faijs/io';
 import {
   STRUCTURAL_TYPES,
   STRUCTURAL_TYPES_EXTENDED,
@@ -459,11 +460,11 @@ export async function convertFcstdFile(input: string, opts?: ConvertOptions): Pr
     if (!opts?.keepGappedContainer) {
       return { file: input, ok: false, gaps, counts, sketches, elapsedMs: Date.now() - t0 };
     }
-    const gappedZip = zipSync(members, { level: 6 });
+    const gappedZip = writeZipEntries(members);
     return { file: input, ok: false, gaps, counts, sketches, zip: gappedZip, elapsedMs: Date.now() - t0 };
   }
 
-  const zip = zipSync(members, { level: 6 });
+  const zip = writeZipEntries(members);
   return { file: input, ok: true, gaps, counts, sketches, zip, elapsedMs: Date.now() - t0 };
 }
 

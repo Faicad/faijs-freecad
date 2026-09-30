@@ -20,15 +20,7 @@ export { parseSketchObject, parseGeometryList, parseConstraintList, CONSTRAINT_N
 export type { ConstraintType, GeoId, GeoRef, PointPos, SketchCon, SketchGeom, ParsedSketch } from './sketch-parse.js';
 export { parseExpressionEngine } from './expressions.js';
 export type { ExpressionBinding } from './expressions.js';
-// Unified .fai.zip read API (docs/fai-zip-format.md; environment-independent).
-export {
-  readManifest,
-  listModels,
-  listModules,
-  readModule,
-  readDataMember,
-  readAssetEntries,
-  openContainer,
-} from './container-read.js';
-export type { ContainerAssetEntries, OpenContainerResult } from './container-read.js';
-export type { ContainerManifest, ContainerModel } from './container.js';
+// The `.fai.zip` container layer is NOT re-exported here: it is faijs' own
+// container format, owned by core (`@faicad/faijs/io/fai-zip`). This package
+// only reads FCStd and converts it, so it depends on the container layer
+// instead of hosting it.

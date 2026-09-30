@@ -1,56 +1,16 @@
 /**
- * M2.1 — .fai.zip container schemas (manifest.json / mapping.json).
+ * FCStd fidelity ledger schema (`mapping.json`, docs/fai-zip-format.md §8.2).
  *
- * Container layout (docs/fai-zip-format.md, unified format v3):
- *   manifest.json   — container manifest, units, models[], active
- *   mapping.json    — per-object fidelity ledger; zero silent loss (R7)
- *   model/*.fai.js  — translated model scripts (main + one per Body)
- *   assets/*.brp    — baked BREP carriers
- *   freecad/*       — byte-exact shadow of the source ZIP members
+ * `mapping.json` is a convention of **this producer**, not part of the `.fai.zip`
+ * format: the container itself — `manifest.json`, `models[]`, assets and the
+ * read/write API — belongs to the format and lives in core
+ * (`@faicad/faijs/io/fai-zip`). What stays here is the per-object accounting a
+ * conversion must produce so that nothing is lost silently (V3).
  */
-import type { FcstdDocument, FcstdObject } from './document.js';
-
-/** One model in the container: entry script (+ optional data member). */
-export interface ContainerModel {
-  /** model identifier: unique in the container, stable (switch/data key) */
-  id: string;
-  /** container path of the model's entry script, inside model/ */
-  entry: string;
-  /** display name; never used as an identifier */
-  label?: string;
-  /** container path of the model's data member; absent = no data member */
-  data?: string;
-}
-
-/** manifest.json schema (unified .fai.zip format v3, docs/fai-zip-format.md §4). */
-export interface ContainerManifest {
-  /** container format identifier — MUST be 3 in this revision */
-  format: 3;
-  /** unit normalization applied to all coordinates; always "mm" */
-  units: 'mm';
-  /** complete model list (length ≥ 1) */
-  models: ContainerModel[];
-  /** id of the initially active model; absent = models[0] */
-  active?: string;
-  /** ISO 8601 timestamp. Display only */
-  createdAt?: string;
-  /** version of the producing tool. Display only */
-  appVersion?: string;
-  /** container display name. Display only */
-  label?: string;
-  /** FCStd conversion provenance. Display only */
-  source?: {
-    /** original FCStd file name (not full path) */
-    file: string;
-    programVersion: string;
-    schemaVersion: number;
-  };
-  /** the model graph requires the BREP chain (fcstd: brep-only output) */
-  requiresBrep?: boolean;
-}
+import type { FcstdObject } from './document.js';
 
 /**
- * Per-object fidelity ledger. Every <ObjectData> object must have exactly one
+ * Per-object fidelity ledger. Every `<ObjectData>` object must have exactly one
  * disposition: translated | baked | preserved-only (V3 zero-silent-loss).
  */
 export type ObjectDisposition = 'translated' | 'baked' | 'preserved-only';
@@ -91,33 +51,6 @@ export interface FaiMapping {
    * order. Omitted when the document has none.
    */
   params?: ParamMappingEntry[];
-}
-
-/**
- * Assemble the container manifest.json from the parsed document.
- * @param doc parsed FCStd document (SchemaVersion read from meta)
- * @param sourceFile original FCStd file name (not full path)
- * @param programVersion FreeCAD program version that wrote the document
- * @param models the container model list (main + one per Body, §5 Phase 3.2)
- * @returns the manifest with format 3, mm units and the model list
- */
-export function buildManifest(
-  doc: FcstdDocument,
-  sourceFile: string,
-  programVersion: string,
-  models: ContainerModel[],
-): ContainerManifest {
-  return {
-    format: 3,
-    source: {
-      file: sourceFile,
-      programVersion,
-      schemaVersion: Number(doc.meta.get('SchemaVersion')?.valueText ?? 4),
-    },
-    units: 'mm',
-    requiresBrep: true,
-    models,
-  };
 }
 
 /**

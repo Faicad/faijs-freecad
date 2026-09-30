@@ -4,7 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { convertFcstdFile } from './convert.js';
-import { openContainer } from './container-read.js';
+import { openContainer } from '@faicad/faijs/io/fai-zip';
+import { readZipEntries, DEFAULT_MAX_ENTRIES, DEFAULT_MAX_TOTAL_BYTES } from '@faicad/faijs/io';
 import { cliRun } from '@faicad/faijs/node';
 import { createApiNamespace } from '@faicad/faijs';
 // A2 (2026-09-28): converted models now emit `cad.sketch` (parametric
@@ -43,6 +44,19 @@ describe.skipIf(!sampleAvailable)('unified .fai.zip openContainer acceptance (fo
     if (!summary.zip) return;
 
     const { manifest, activeModel, loader, files, assets } = openContainer(summary.zip);
+
+    // Phase 3.9 (2026-09-30): the container layer inherits io/zip's default read
+    // caps instead of defining its own. A real converted product must fit them —
+    // measured on `hole_puzzle.fcstd`, the largest fixture here: 228 members and
+    // 10.2 MiB uncompressed, i.e. ~2% of the 9999 / 512 MiB budget. The container
+    // grows roughly 3x the source document (byte-exact freecad/ shadow + every
+    // .brp copied again into assets/), so the headroom is ~50x a document of
+    // this class. Asserted rather than measured-in-a-comment, so a future
+    // default reduction or a ballooning producer fails here, not in the field.
+    const members = readZipEntries(summary.zip);
+    const uncompressed = [...members.values()].reduce((n, b) => n + b.byteLength, 0);
+    expect(members.size).toBeLessThan(DEFAULT_MAX_ENTRIES);
+    expect(uncompressed).toBeLessThan(DEFAULT_MAX_TOTAL_BYTES);
 
     // manifest declares the unified schema
     expect(manifest.format).toBe(3);
