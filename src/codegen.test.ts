@@ -184,6 +184,56 @@ describe('M5 codegen', () => {
     expect(r.code).not.toMatch(/cad\.place\([^)]*Sketch199/);
   });
 
+  // C3 (2026-10-01): the same frame must not reach the FEATURE either. The A3
+  // plane already puts the extruded solid in the sketch frame, so M8.3's
+  // post-hoc `cad.place` would apply the identical Placement a SECOND time.
+  // Measured (Winch-Model1-Roll-Vertical): Sketch002 plane origin z=72 + place
+  // +72 → bbox z 154 (truth 82), com z 53.19 (truth 41.0). Volume is invariant
+  // under translation, so this class surfaces as bbox/com failure only.
+  it('C3: does not re-place the feature when its profile sketch carries the plane frame', () => {
+    const sketch = simpleObj('Sketcher::SketchObject', 'Sketch199', {});
+    sketch.properties.set('Placement', {
+      name: 'Placement', type: 'App::PropertyPlacement', tagName: 'Property',
+      children: [{
+        name: 'PropertyPlacement', type: '', tagName: 'PropertyPlacement',
+        children: [], valueXml: '', valueText: '',
+        attributes: { Px: '0', Py: '0', Pz: '250', Q0: '0', Q1: '0', Q2: '0', Q3: '1' },
+      }],
+      valueXml: '', valueText: '', attributes: {},
+    } as never);
+    const pad = simpleObj('PartDesign::Pad', 'Pad', { Profile: { value: 'Sketch199' }, Length: { value: '10' } });
+    const doc: FcstdDocument = { objects: [sketch, pad], typeIndex: new Map(), meta: new Map() };
+    const inputs = new Map([['Sketch199', { geoms: [{ kind: 'line' as const, x1: 0, y1: 0, x2: 40, y2: 0 }], constraints: [] }]]);
+    const placements = new Map([['Sketch199', { p: [0, 0, 250] as [number, number, number], q: [0, 0, 0, 1] as [number, number, number, number] }]]);
+    const r = generateModel(doc, new Map(), NO_CONTOURS, 't', placements, undefined, undefined, undefined, undefined, inputs);
+    // the frame rides inside cad.sketch's plane…
+    expect(r.code).toContain('"origin"');
+    // …so the Pad must NOT be re-placed by the same +250 (double application).
+    expect(r.code).not.toMatch(/cad\.place\(/);
+    expect(r.code).not.toContain('Pad__place');
+  });
+
+  // C3 counterpart: the suppression is licensed by the PARAMETRIC sketch
+  // emission only. The A5 `cad.profile` fallback builds in local coordinates and
+  // still needs the M8.3 re-orientation — dropping it would strand the solid at
+  // the origin.
+  it('C3: still re-places the feature when the profile sketch had no parametric plane', () => {
+    const sketch = simpleObj('Sketcher::SketchObject', 'Sketch199', {});
+    const pad = simpleObj('PartDesign::Pad', 'Pad', { Profile: { value: 'Sketch199' }, Length: { value: '10' } });
+    const doc: FcstdDocument = { objects: [sketch, pad], typeIndex: new Map(), meta: new Map() };
+    // No sketchInputs → A5 fallback (cad.profile), no plane frame emitted.
+    const placements = new Map([['Sketch199', { p: [0, 0, 250] as [number, number, number], q: [0, 0, 0, 1] as [number, number, number, number] }]]);
+    const r = generateModel(
+      doc,
+      new Map([['Sketch199', { level: 'L0' as const, loopCount: 1 }]]),
+      new Map([['Sketch199', square()]]),
+      't',
+      placements,
+    );
+    expect(r.code).toMatch(/cad\.place\(/);
+    expect(r.code).toContain('position: [0,0,250]');
+  });
+
   // A5 (2026-09-28 plan): the cad.profile emission is the FALLBACK branch
   // only — it must carry an explicit reason naming why the sketch was not
   // parameterizable (sketch-profile-fallback[: cause]).

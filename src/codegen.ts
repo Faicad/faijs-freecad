@@ -659,7 +659,26 @@ export function generateModel(
       const subCall = featureIsSubtractive ? verdict.calls.find((c) => c.op === 'cad.subtract') : undefined;
       const cutVar = subCall && subCall.inputs.length >= 2 ? subCall.inputs[1] : undefined;
       const reorientVar = cutVar ?? lastVar;
-      if (lastVar && pl && !isIdentityPlacement(pl) && !isPrePlaced && reorientVar) {
+      // C3 (2026-10-01): when the profile sketch was emitted parametrically with
+      // an explicit plane frame (A3, `plane: { origin, normal, xAxis }` — built
+      // from that SAME sketch's attachment-resolved Placement), the extruded
+      // geometry already lands in the sketch frame, and the M8.3 `cad.place`
+      // below would apply the identical frame a SECOND time. A3's own comment
+      // declared this place "replaced"; the guard was simply never added.
+      // Measured (Winch-Model1-Roll-Vertical): Sketch002's plane origin is z=72
+      // and Pad002 was placed +72 again → bbox z 154 (truth 82), com z 53.19
+      // (truth 41.0). Volume is unaffected by translation, so this class shows
+      // up as bbox/com failure only. 133 / 3131 products carry the pattern;
+      // none of them currently passes, so no error-cancellation to preserve.
+      const sketchLinkPlacement =
+        sketchIsSketchObj && sketchLink !== undefined ? placements?.get(sketchLink) : undefined;
+      const sketchCarriesFrame =
+        sketchLinkPlacement !== undefined &&
+        !isIdentityPlacement(sketchLinkPlacement) &&
+        // Only the PARAMETRIC `cad.sketch` path emits the plane frame; the A5
+        // fallback (`cad.profile`) still needs the M8.3 re-orientation.
+        (sketchLink !== undefined ? (sketchInputs?.get(sketchLink)?.geoms.length ?? 0) : 0) > 0;
+      if (lastVar && pl && !isIdentityPlacement(pl) && !isPrePlaced && !sketchCarriesFrame && reorientVar) {
         // Single rigid placement: rotate (quaternion about local origin) +
         // translate = FreeCAD Placement(P,Q). Emit `cad.place` with the ORIGINAL
         // (unplaced) var as input — do NOT pre-remap `cur` to `rv`, or the place
