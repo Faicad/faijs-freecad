@@ -936,6 +936,50 @@ describe('M5 codegen', () => {
     expect(places[0]!.params.position).toEqual([0, 0, 2.8]);
   });
 
+  // C2 (2026-10-01, HBS_assembly com z 6.17 vs 5.43): the truth reference
+  // (`export-fcstd-truth.py`) compounds only ROOT shape objects and applies each
+  // root's Document Placement ON TOP of its `.brp`-read shape; a CHILD
+  // shape-asset contributes only its `.brp`-read shape (the parent's frozen
+  // `.brp` already has the child's placement baked). `cad.import_brep` returns
+  // the `.brp`-read shape, so a ROOT must ALWAYS re-apply its Document Placement
+  // — even when the `.brp` header's embedded location equals that placement
+  // (the header evidence only licenses the skip for a CHILD). Before the fix
+  // both objects carried `prePlacedAssets` and the root's place was dropped.
+  it('root shape-asset re-applies Placement; referenced child shape-asset skips it (C2, HBS_assembly)', () => {
+    const doc: FcstdDocument = {
+      objects: [
+        simpleObj('Part::Feature', 'Cut001', { Shape: { file: 'PartShape1.brp' } }),
+        withLinkList('Part::Compound', 'Compound', 'Links', ['Cut001']),
+        simpleObj('Part::Feature', 'Cut002', { Shape: { file: 'PartShape3.brp' } }),
+      ],
+      typeIndex: new Map(),
+      meta: new Map(),
+    };
+    const identQ: [number, number, number, number] = [0, 0, 0, 1];
+    const r = generateModel(
+      doc,
+      new Map(),
+      NO_CONTOURS,
+      't',
+      new Map([
+        // child: Cut001 +0.5; root: Cut002 +3; container: identity
+        ['Cut001', { p: [0, 0, 0.5] as [number, number, number], q: identQ }],
+        ['Cut002', { p: [0, 0, 3] as [number, number, number], q: identQ }],
+        ['Compound', { p: [0, 0, 0] as [number, number, number], q: identQ }],
+      ]),
+      new Set(['Cut001', 'Compound', 'Cut002']),
+      undefined,
+      undefined,
+      // both .brp headers embed a location EQUAL to their Document Placement
+      // (brpEmbeddedLocation(PartShape1.brp)==(0,0,0.5), PartShape3.brp==(0,0,3))
+      new Set(['Cut001', 'Cut002']),
+    );
+    const places = r.calls.filter((c) => c.op === 'cad.place');
+    expect(places.length, 'only the ROOT shape-asset may be re-placed').toBe(1);
+    expect(places[0]!.source).toBe('Cut002');
+    expect(places[0]!.params.position).toEqual([0, 0, 3]);
+  });
+
   // GOTCHA (2026-09-25, A1 mirror E_OP_FAILED / A3 revolve REVOLVE_FAILED):
   // `cad.mirror(input, options)` and `cad.revolve(input, options)` take the
   // SOURCE SHAPE as a POSITIONAL argument. The translate branch must NOT set

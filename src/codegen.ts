@@ -154,10 +154,13 @@ export function generateModel(
   brokenShapeAssets?: ReadonlySet<string>,
   /** P8: parsed PropertyFilletEdges binaries keyed by object name (Part::Chamfer/Fillet). */
   filletEdgesData?: ReadonlyMap<string, FilletEdgeEntry[]>,
-  /** Pre-placed .brp assets (embedded Locations ≠ identity): never re-place these —
-   *  double-applying the transform lands the shape 2× away (Beds Section → z=3000
-   *  vs truth 1500). Derived per-object by the caller from the .brp header
-   *  (`brpHasEmbeddedLocation`, unpack.ts). */
+  /** Shape-asset object names whose .brp header embeds an `Locations` transform
+   *  equal to the Document Placement (`brpEmbeddedLocation` == placement). These
+   *  are CANDIDATES for skipping the re-place; the skip is only honored for a
+   *  CHILD shape-asset (referenced by another shape-bearing object), whose
+   *  placement is already baked into the parent's frozen `.brp`. A ROOT
+   *  shape-asset is always re-placed by its Document Placement (truth applies it
+   *  on top) — HBS_assembly Cut002 (C2, 2026-10-01). See `childShapeAssets`. */
   prePlacedAssets?: ReadonlySet<string>,
   /** A2: canonical geoms+constraints per parameterizable sketch (cad.sketch emission). */
   sketchInputs?: ReadonlyMap<string, { geoms: SketchGeom[]; constraints: SketchConstraint[] }>,
@@ -186,6 +189,26 @@ export function generateModel(
       }
     }
     nodes.set(obj.name, { name: obj.name, obj, deps });
+  }
+
+  // C2 (2026-10-01, HBS_assembly): shape-bearing objects that are somebody
+  // else's geometry INPUT — i.e. children consumed by a parent's frozen shape.
+  // The truth reference (`export-fcstd-truth.py`) compounds only the ROOT
+  // shape objects and applies each root's Document Placement ON TOP of its
+  // `.brp`-read shape (`global = Placement ∘ Shape`), while a CHILD contributes
+  // only its `.brp`-read shape — the parent's frozen `.brp` (PartShape2.brp for
+  // HBS' Compound) already carries the child's placement baked in. faijs'
+  // `cad.import_brep` returns that same `.brp`-read shape (its root location
+  // applied by the BREP reader), so the M8.3 re-orient step MUST run for a ROOT
+  // even when the `.brp` header's embedded location equals the Document
+  // Placement (HBS Cut002: embedded z=3 == Placement z=3, yet truth expects the
+  // placement applied on top → com z 6.17; skipping it left faijs at 5.43).
+  // The embedded==placement skip survives for CHILDREN only (HBS Cut001:
+  // applying its +0.5 on top of the parent's baked frame double-places it).
+  const childShapeAssets = new Set<string>();
+  for (const obj of doc.objects) {
+    if (!shapeCarriers?.has(obj.name)) continue;
+    for (const d of nodes.get(obj.name)?.deps ?? []) childShapeAssets.add(d);
   }
 
   // Kahn topological sort; objects with unbuilt deps fall back to insertion
@@ -606,15 +629,21 @@ export function generateModel(
         sketchLink !== undefined &&
         byName.get(sketchLink)?.type === 'Sketcher::SketchObject';
       const pl = (sketchIsSketchObj ? placements?.get(sketchLink) : undefined) ?? placements?.get(name);
-      // GOTCHA (H13 REVISED twice, 2026-09-26): shape-asset .brp members
-      // SOMETIMES embed the Placement in their Locations header (TO92,
-      // Beds Section) and sometimes don't (Beds Section002-005). The old
-      // unconditional rules were both wrong: always-place double-applies
-      // pre-placed assets (Section landed z=3000, truth 1500); never-place
-      // stranded local-frame assets at the origin (solids 10vs6, z 2850
-      // vs 450). The caller passes `prePlacedAssets` derived from the .brp
-      // header itself (brpHasEmbeddedLocation) — place only when NOT embedded.
-      const isPrePlaced = prePlacedAssets?.has(name) ?? false;
+      // GOTCHA (H13 REVISED twice, 2026-09-26; C2 root/child split 2026-10-01):
+      // shape-asset .brp members SOMETIMES embed the Placement in their
+      // Locations header (TO92, Beds Section) and sometimes don't (Beds
+      // Section002-005). The old unconditional rules were both wrong:
+      // always-place double-applies pre-placed CHILDREN (Beds Section landed
+      // z=3000, truth 1500); never-place stranded local-frame assets at the
+      // origin (solids 10vs6, z 2850 vs 450). The caller passes
+      // `prePlacedAssets` derived from the .brp header itself
+      // (`brpEmbeddedLocation`) — but that header evidence only licenses the
+      // skip for a CHILD (`childShapeAssets`): a referenced shape-asset lives
+      // inside its parent's frozen `.brp` (placement already baked), whereas a
+      // ROOT's Document Placement is applied on top of the read shape by the
+      // truth reference — see `childShapeAssets` above (HBS_assembly Cut002).
+      const isPrePlaced =
+        (prePlacedAssets?.has(name) ?? false) && childShapeAssets.has(name);
       // Subtractive features (Pocket/Cut) pair a profile-extrude CUT with an
       // already-placed base inside `cad.subtract`. Re-orient the CUT (not the
       // subtracted result) so the boolean runs in one frame — the carved result
