@@ -1734,6 +1734,27 @@ describe('H7 Part::Feature pure-Shape carrier', () => {
     }
   });
 
+  it('C3c-2 (2026-10-02): a Pocket carrying BOTH Shape and SubShape imports Shape — SubShape is the cut TOOL, not the result', () => {
+    // `SubShape` is FreeCAD's AddSubShape: the solid the feature adds or
+    // removes. On a Pocket that is the material REMOVED, so importing it
+    // composites the cut back on as positive volume. Measured over the
+    // corpus: 1028 Pockets carry both properties and the two brps differ in
+    // every one of them, while none has a missing/empty Shape member.
+    // ISO4762 M6x30 read SubShape (112.197) and reported 1423.277 where the
+    // Shape member (1198.832) is the truth.
+    const pocket = obj('PartDesign::Pocket', 'Pocket', [
+      prop('Profile', { name: 'Link', attrs: { value: 'Sketch001' } }),
+      prop('Shape', { name: 'Part', attrs: { file: 'PartShape3.brp' } }),
+      prop('SubShape', { name: 'Part', attrs: { file: 'PartShape4.brp' } }),
+    ]);
+    const r = translateObject(pocket, () => undefined, undefined, new Set(['Pocket']));
+    expect(r).toMatchObject({ kind: 'translated', reason: 'shape-asset' });
+    if (r.kind === 'translated') {
+      expect(r.calls[0]!.op).toBe('cad.import_brep');
+      expect(r.calls[0]!.params).toEqual({ asset: 'PartShape3' });
+    }
+  });
+
   it('GOTCHA: a Shape-carrier WITHOUT SubShape (e.g. a Pad) is NOT hijacked into shape-asset — normal translation path applies', () => {
     // Pads also carry a Shape property in Body-less files; only SubShape
     // (the feature's own result cache) qualifies as shape-asset evidence.

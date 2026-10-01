@@ -719,16 +719,28 @@ export function translateObject(
   // H7 follow-up (Body-less CAM corpus, 2026-09-20): a SubShape property whose
   // .brp member exists is the feature's own RESULT cache — the pocketed/
   // filleted geometry is already a fact delivered via assets/. shape-asset
-  // beats an honest-but-useless dependency gap for Body-less files. Only
-  // SubShape qualifies (Pads also carry Shape in these files — they must keep
-  // the normal translation path).
+  // beats an honest-but-useless dependency gap for Body-less files.
+  //
+  // C3c-2 (2026-10-02) — THAT PREMISE WAS WRONG FOR SUBTRACTIVE FEATURES.
+  // `SubShape` is FreeCAD's `AddSubShape`: the TOOL the feature adds or
+  // removes, not its result. On a `PartDesign::Pocket` the tool is the
+  // material REMOVED, so importing it composites the cut back on as positive
+  // volume. Measured over the corpus: 1028 Pockets carry both properties and
+  // the two brps differ in EVERY one of them; 0 of them have a missing or
+  // empty `Shape` member, so `Shape` is always available to prefer. ISO4762
+  // M6x30 read SubShape (112.197, the hex socket) and reported 1423.277
+  // instead of the Shape member's 1198.832.
+  //
+  // The lookup therefore goes through `shapeBrpFile` (Shape first, SubShape as
+  // the fallback for the Body-less features that carry ONLY a SubShape —
+  // hole_puzzle's Chamfer002), instead of taking SubShape unconditionally.
   if (shapeCarriers?.has(obj.name) && obj.properties.has('SubShape')) {
     // The result cache is a real, addressable solid: downstream features
     // (Fillet Base→Pocket, Cut Base→…) must resolve it as a variable, so the
     // verdict emits a real load call instead of zero calls (hole_puzzle
     // GOTCHA: zero-call objects got no codegen variable and consumers gapped
     // with fillet-missing-base / cut-missing-dependency).
-    const assetFile = obj.properties.get('SubShape')?.children[0]?.attributes['file'] ?? `${obj.name}.SubShape.brp`;
+    const assetFile = shapeBrpFile(obj) ?? `${obj.name}.SubShape.brp`;
     return {
       kind: 'translated',
       calls: [shapeAssetCall(obj, assetFile)],
