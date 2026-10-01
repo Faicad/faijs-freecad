@@ -605,6 +605,54 @@ describe('M5 codegen', () => {
     expect(r.rootVar).toBe('assembly');
   });
 
+  // M-B1 (2026-10-01): single-Body docs must produce EXACTLY ONE terminal.
+  // The Body module's terminal is named `assembly` (not `Body_out`) and the
+  // aggregate entry imports it directly — there is NO `let assembly = Body_out;`
+  // alias. The alias leaked a second `Body_out` terminal into the STEP export,
+  // which parity merge_parts summed → solids 1vs2 (the 922-file mismatch class).
+  // GOTCHA: empirically verified — renaming the terminal to `assembly` collapses
+  // the executed program to one terminal (cross-module same-named shape var
+  // merges), so cliRun exports a single `out.step`.
+  it('single-Body emits one terminal: Body terminal is `assembly`, main imports it directly (M-B1)', () => {
+    const mkBody = (name: string, members: string[]): FcstdObject => {
+      const b = simpleObj('PartDesign::Body', name);
+      b.properties.set('Group', {
+        name: 'Group', type: 'App::PropertyLinkList', tagName: 'Property',
+        children: [{
+          name: 'LinkList', type: '', tagName: 'LinkList',
+          children: members.map((m) => ({
+            name: 'Link', type: '', tagName: 'Link', children: [], valueXml: '', valueText: '', attributes: { value: m },
+          })),
+          valueXml: '', valueText: '', attributes: { count: String(members.length) },
+        }],
+        valueXml: '', valueText: '', attributes: {},
+      });
+      return b;
+    };
+    const doc: FcstdDocument = {
+      objects: [
+        mkBody('Body', ['Pad']),
+        simpleObj('Sketcher::SketchObject', 'Sketch', {}),
+        simpleObj('PartDesign::Pad', 'Pad', { Profile: { value: 'Sketch' }, Length: { value: '10' } }),
+      ],
+      typeIndex: new Map(),
+      meta: new Map(),
+    };
+    const verdicts = new Map([['Sketch', { level: 'L0' as const, loopCount: 1 }]]);
+    const contours = new Map([['Sketch', square()]]);
+    const r = generateModel(doc, verdicts, contours, 't');
+    // one Body file, terminal named `assembly`
+    expect(r.files.length).toBe(1);
+    const bodyFile = r.files[0]!;
+    expect(bodyFile.path).toBe('model/Body.fai.js');
+    expect(bodyFile.code).toContain('let assembly =');
+    expect(bodyFile.code).not.toContain('let Body_out =');
+    // main imports `assembly` directly, NO alias that leaks a second terminal
+    expect(r.code).toContain(`import { assembly } from './Body.fai.js';`);
+    expect(r.code).not.toContain('let assembly = Body_out');
+    expect(r.rootVar).toBe('assembly');
+  });
+
   // M10.5: loose Part features (no Body) stay in main.fai.js even when
   // Bodies exist.
   it('keeps loose non-Body features in main alongside the aggregate (M10.5)', () => {
