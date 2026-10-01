@@ -26,7 +26,7 @@ import { describe, it, expect } from 'vitest';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { unzipSync, strFromU8 } from 'fflate';
+import { readZipEntries } from '@faicad/faijs/io/zip';
 import { convertFcstdFile } from './convert.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -41,10 +41,10 @@ const CASES = [
 
 /** Read `model/main.fai.js` out of the container and count the compound members. */
 function compoundMemberCount(zip: Uint8Array, objectName: string): number | undefined {
-  const members = unzipSync(zip);
-  const entry = Object.keys(members).find((n) => n.endsWith('main.fai.js'));
+  const members = readZipEntries(zip);
+  const entry = [...members.keys()].find((n) => n.endsWith('main.fai.js'));
   if (!entry) return undefined;
-  const src = strFromU8(members[entry]!);
+  const src = new TextDecoder().decode(members.get(entry)!);
   const m = src.match(new RegExp(`(?:let\\s+)?${objectName}\\s*=\\s*cad\\.compound\\(\\{\\s*members:\\s*\\[([^\\]]*)\\]`));
   if (!m) return undefined;
   return m[1]!.split(',').map((s) => s.trim()).filter(Boolean).length;

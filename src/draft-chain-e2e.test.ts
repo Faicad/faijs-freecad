@@ -30,7 +30,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFil
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { unzipSync, strFromU8 } from 'fflate';
+import { readZipEntries } from '@faicad/faijs/io/zip';
 import { cliRun } from '@faicad/faijs/node';
 import { createApiNamespace } from '@faicad/faijs';
 import { mergeSketchNamespace, installSketchSolver } from '@faicad/faijs-sketch';
@@ -73,9 +73,9 @@ const CASES = [
 
 /** The emitted main module source, for shape assertions on the drawing chain. */
 function mainSource(zip: Uint8Array): string {
-  const members = unzipSync(zip);
-  const entry = Object.keys(members).find((n) => n.endsWith('main.fai.js'));
-  return entry ? strFromU8(members[entry]!) : '';
+  const members = readZipEntries(zip);
+  const entry = [...members.keys()].find((n) => n.endsWith('main.fai.js'));
+  return entry ? new TextDecoder().decode(members.get(entry)!) : '';
 }
 
 /** Materialise the product into a scratch project and execute every model. */

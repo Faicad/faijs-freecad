@@ -7,7 +7,7 @@
  *
  * faijs contract: unit mm, errors via Result (ok/err).
  */
-import { unzipSync } from 'fflate';
+import { readZipEntries } from '@faicad/faijs/io/zip';
 import { err, ok, type Result } from '@faicad/faijs/api/result';
 
 /**
@@ -43,23 +43,23 @@ export type UnpackError =
  * @returns the unpacked archive, or a structured UnpackError.
  */
 export function unpackFcstd(data: Uint8Array): Result<FcstdArchive, UnpackError> {
-  let entries: Record<string, Uint8Array>;
+  let entries: Map<string, Uint8Array>;
   try {
-    entries = unzipSync(data);
+    entries = readZipEntries(data);
   } catch (e) {
     return err({
       kind: 'not-zip',
       message: `cannot open as ZIP: ${e instanceof Error ? e.message : String(e)}`,
     });
   }
-  if (!('Document.xml' in entries)) {
+  if (!entries.has('Document.xml')) {
     return err({ kind: 'no-document-xml', message: 'root Document.xml not found in ZIP' });
   }
-  // fflate does not expose the raw ZIP comment through unzipSync; read it
-  // directly from the EOCD record (22 bytes from end when comment is empty,
-  // else longer). Advisory only — never used for validation.
+  // readZipEntries filters directory entries; the ZIP comment is advisory only
+  // and must never cause rejection (fflate does not expose it through the read
+  // entry either, so we read the EOCD record directly).
   const comment = readZipComment(data) ?? '';
-  return ok({ members: new Map(Object.entries(entries)), zipComment: comment });
+  return ok({ members: entries, zipComment: comment });
 }
 
 function readZipComment(data: Uint8Array): string | null {

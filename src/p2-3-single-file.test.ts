@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync as fsExists } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { convertFcstdFile } from './convert.js';
-import { unzipSync, strFromU8 } from 'fflate';
+import { readZipEntries } from '@faicad/faijs/io/zip';
 import { cliRun } from '@faicad/faijs/node';
 
 /**
@@ -94,14 +94,14 @@ describe.skipIf(!existsSync(CORPUS))('P2-3 single-file acceptance (real FreeCAD 
         }
         // Extract model/main.fai.js (+ assets) from the produced container.
         const scratch = mkdtempSync(join(tmpdir(), 'p2-3-'));
-        const members = unzipSync(summary.zip);
+        const members = readZipEntries(summary.zip);
         let mainPath: string | null = null;
         const assetsDir = join(scratch, 'assets');
-        for (const [name, bytes] of Object.entries(members)) {
+        for (const [name, bytes] of members) {
           if (name.startsWith('model/') && name.endsWith('.fai.js')) {
             const p = join(scratch, name.slice('model/'.length));
             mkdirSync(join(p, '..'), { recursive: true });
-            writeFileSync(p, strFromU8(bytes));
+            writeFileSync(p, new TextDecoder().decode(bytes));
             if (!mainPath || p.endsWith('main.fai.js')) mainPath = p;
           } else if (name.endsWith('.brp') || name.startsWith('assets/')) {
             mkdirSync(assetsDir, { recursive: true });

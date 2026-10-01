@@ -37,7 +37,7 @@ import type { Placement } from './placement.js';
 import { effectivePlacement } from './attachment.js';
 import { buildFaiZip } from './build-fai-zip.js';
 import { isOk } from '@faicad/faijs/api/result';
-import { unzipSync, strToU8 } from 'fflate';
+import { readZipEntries } from '@faicad/faijs/io/zip';
 import { writeZipEntries } from '@faicad/faijs/io';
 import {
   STRUCTURAL_TYPES,
@@ -392,9 +392,9 @@ export async function convertFcstdFile(input: string, opts?: ConvertOptions): Pr
   );
   if (built.error || !built.result) return fail(`container build failed: ${built.error ?? 'unknown'}`);
   const members: Record<string, Uint8Array> = {};
-  for (const [k, v] of Object.entries(unzipSync(built.result.zip))) members[k] = v;
-  members['model/main.fai.js'] = strToU8(gen.code);
-  for (const f of gen.files) members[f.path] = strToU8(f.code);
+  for (const [k, v] of readZipEntries(built.result.zip)) members[k] = v;
+  members['model/main.fai.js'] = new TextEncoder().encode(gen.code);
+  for (const f of gen.files) members[f.path] = new TextEncoder().encode(f.code);
 
   const mapping = built.result.mapping;
   for (const o of gen.objects) {
@@ -428,7 +428,7 @@ export async function convertFcstdFile(input: string, opts?: ConvertOptions): Pr
       constraints: sk.constraints.map((c) => ({ index: c.index, type: c.type, refs: c.refs, value: c.value, isDriving: c.isDriving })),
     };
     const path = `assets/${obj.name}.contour.json`;
-    members[path] = strToU8(JSON.stringify(asset, null, 2));
+    members[path] = new TextEncoder().encode(JSON.stringify(asset, null, 2));
     const entry = mapping.objects.find((e) => e.name === obj.name);
     if (entry && !entry.artifacts.includes(path)) entry.artifacts.push(path);
   }
@@ -441,7 +441,7 @@ export async function convertFcstdFile(input: string, opts?: ConvertOptions): Pr
 
   // C4 final check: reclassify python-opaque; everything else baked = gap
   const gaps = auditMapping(mapping);
-  members['mapping.json'] = strToU8(JSON.stringify(mapping, null, 2));
+  members['mapping.json'] = new TextEncoder().encode(JSON.stringify(mapping, null, 2));
 
   const counts = { translated: 0, pythonBaked: 0, preservedOnly: 0, baked: 0 };
   for (const o of mapping.objects) {

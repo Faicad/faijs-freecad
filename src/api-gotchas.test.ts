@@ -10,7 +10,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { createNodePlanegcsSolver } from '@faicad/faijs-sketch/node';
 import type { SketchSolver } from '@faicad/faijs-sketch';
-import { zipSync, strToU8, unzipSync } from 'fflate';
+import { writeZipEntries, readZipEntries } from '@faicad/faijs/io/zip';
 
 let solver: SketchSolver;
 beforeAll(async () => {
@@ -55,19 +55,19 @@ describe('planegcs API traps (M3.4)', () => {
   });
 });
 
-describe('fflate API traps (M2)', () => {
-  it('GOTCHA: zipSync with a string value recurses infinitely (RangeError), must use strToU8', () => {
+describe('zip API traps (M2)', () => {
+  it('GOTCHA: writeZipEntries with a string value recurses infinitely (RangeError), must pass Uint8Array', () => {
     // build-fai-zip.ts first passed JSON.stringify(...) strings directly as
     // zipSync values; fflate treats a string as a directory object and its
     // `fltn` walker recurses until stack overflow. Always wrap text with
-    // strToU8. (fflate 0.8.2, esm/index.mjs fltn)
+    // Uint8Array (TextEncoder). (fflate 0.8.2, esm/index.mjs fltn)
     expect(() =>
-      zipSync({ 'manifest.json': '{"format":1}' } as never),
+      writeZipEntries({ 'manifest.json': '{"format":1}' } as never),
     ).toThrow(RangeError);
 
     // correct usage round-trips
-    const ok = zipSync({ 'manifest.json': strToU8('{"format":1}') });
-    expect(Buffer.from(unzipSync(ok)['manifest.json']!).toString()).toBe('{"format":1}');
+    const ok = writeZipEntries({ 'manifest.json': new TextEncoder().encode('{"format":1}') });
+    expect(new TextDecoder().decode(readZipEntries(ok).get('manifest.json')!)).toBe('{"format":1}');
   });
 });
 

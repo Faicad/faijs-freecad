@@ -3,7 +3,7 @@
  * Uses a synthetic in-memory FCStd archive plus a real sample if available.
  */
 import { describe, it, expect } from 'vitest';
-import { zipSync, strToU8, unzipSync } from 'fflate';
+import { writeZipEntries, readZipEntries } from '@faicad/faijs/io/zip';
 import { unpackFcstd, memberText } from './unpack.js';
 import { buildFaiZip } from './build-fai-zip.js';
 import { isOk } from '@faicad/faijs/api/result';
@@ -42,11 +42,11 @@ function makeFakeFcstd(): Uint8Array {
     </Object>
   </ObjectData>
 </Document>`;
-  return zipSync(
+  return writeZipEntries(
     {
-      'Document.xml': strToU8(doc),
-      'GuiDocument.xml': strToU8('<GuiDocument/>'),
-      'Box.brp': strToU8('CASCADE Topology V1 (c) fake brep bytes'),
+      'Document.xml': new TextEncoder().encode(doc),
+      'GuiDocument.xml': new TextEncoder().encode('<GuiDocument/>'),
+      'Box.brp': new TextEncoder().encode('CASCADE Topology V1 (c) fake brep bytes'),
     },
     { comment: 'FreeCAD Document' },
   );
@@ -68,7 +68,7 @@ describe('fcstd container (M2)', () => {
   });
 
   it('rejects ZIP without Document.xml', () => {
-    const zip = zipSync({ 'other.txt': strToU8('x') });
+    const zip = writeZipEntries({ 'other.txt': new TextEncoder().encode('x') });
     const archive = unpackFcstd(zip);
     expect(isOk(archive)).toBe(false);
     if (!isOk(archive)) expect(archive.error.kind).toBe('no-document-xml');
@@ -82,14 +82,14 @@ describe('fcstd container (M2)', () => {
     expect(built.error).toBeUndefined();
     if (!built.result) return;
     // re-unpack the produced container and verify shadow byte equality
-    const round = unzipSync(built.result.zip);
+    const round = readZipEntries(built.result.zip);
     for (const [path, bytes] of source.value.members) {
-      const shadow = round[`freecad/${path}`];
+      const shadow = round.get(`freecad/${path}`);
       expect(shadow, `freecad/${path} present`).toBeDefined();
       expect(Buffer.from(shadow!).equals(Buffer.from(bytes))).toBe(true);
     }
     // member set identical: freecad/ prefix + assets + manifests
-    const shadowPaths = Object.keys(round).filter((p) => p.startsWith('freecad/'));
+    const shadowPaths = [...round.keys()].filter((p) => p.startsWith('freecad/'));
     expect(shadowPaths.length).toBe(source.value.members.size);
   });
 
@@ -117,8 +117,8 @@ describe('fcstd container (M2)', () => {
     if (!isOk(source)) return;
     const built = await buildFaiZip(source.value, 'fake.FCStd', DEFAULT_MODELS);
     if (!built.result) return;
-    const round = unzipSync(built.result.zip);
-    const manifest = JSON.parse(Buffer.from(round['manifest.json']!).toString('utf-8'));
+    const round = readZipEntries(built.result.zip);
+    const manifest = JSON.parse(Buffer.from(round.get('manifest.json')!).toString('utf-8'));
     expect(manifest.format).toBe(3);
     expect(manifest.units).toBe('mm');
     expect(manifest.models).toEqual(DEFAULT_MODELS);
@@ -135,8 +135,8 @@ describe('fcstd container (M2)', () => {
     if (!isOk(source)) return;
     const built = await buildFaiZip(source.value, 'fake.FCStd', DEFAULT_MODELS);
     if (!built.result) return;
-    const round = unzipSync(built.result.zip);
-    const assetMembers = Object.keys(round).filter((p) => p.startsWith('assets/')).sort();
+    const round = readZipEntries(built.result.zip);
+    const assetMembers = [...round.keys()].filter((p) => p.startsWith('assets/')).sort();
     const artifactAssets = built.result.mapping.objects
       .flatMap((o) => o.artifacts)
       .filter((a) => a.startsWith('assets/'))
@@ -145,7 +145,7 @@ describe('fcstd container (M2)', () => {
     // byte-exact against the freecad/ shadow (D-B: .brp stored as-is)
     for (const asset of assetMembers) {
       const brpName = asset.slice('assets/'.length);
-      expect(Buffer.from(round[asset]!)).toEqual(Buffer.from(round[`freecad/${brpName}`]!));
+      expect(Buffer.from(round.get(asset)!)).toEqual(Buffer.from(round.get(`freecad/${brpName}`)!));
     }
   });
 });

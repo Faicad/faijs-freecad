@@ -24,7 +24,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFil
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { unzipSync, strFromU8 } from 'fflate';
+import { readZipEntries } from '@faicad/faijs/io/zip';
 import { cliRun } from '@faicad/faijs/node';
 import { createApiNamespace } from '@faicad/faijs';
 import { mergeSketchNamespace, installSketchSolver } from '@faicad/faijs-sketch';
@@ -51,10 +51,10 @@ const REL = join(
 
 /** Every emitted model module's source, concatenated. */
 function modelSource(zip: Uint8Array): string {
-  const members = unzipSync(zip);
-  return Object.entries(members)
+  const members = readZipEntries(zip);
+  return [...members]
     .filter(([n]) => n.endsWith('.fai.js'))
-    .map(([, b]) => strFromU8(b as Uint8Array))
+    .map(([, b]) => new TextDecoder().decode(b))
     .join('\n');
 }
 
