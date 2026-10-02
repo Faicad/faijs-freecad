@@ -740,6 +740,7 @@ describe('M5 codegen', () => {
           })),
           valueXml: '', valueText: '', attributes: { count: String(members.length) },
         }],
+        valueXml: '', valueText: '', attributes: {},
       });
       return b;
     };
