@@ -2,7 +2,7 @@
  * Dump one converted product's emitted main source + the per-object ledger, to
  * see how a given corpus file's Draft objects were (or were not) translated.
  *
- * Usage: npx tsx packages/fcstd/scripts/probe-emitted-source.ts <file.FCStd> [grepPattern]
+ * Usage: npx tsx packages/faijs-freecad/scripts/probe-emitted-source.ts <file.FCStd> [grepPattern]
  */
 import { unzipSync, strFromU8 } from 'fflate';
 import { convertFcstdFile } from '../src/convert.js';

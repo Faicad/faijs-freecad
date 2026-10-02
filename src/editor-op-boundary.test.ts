@@ -68,7 +68,7 @@ const EDITOR_OWNED: Record<string, string> = {
 const DECLARED_BORROW: Record<string, number> = {};
 
 const here = dirname(fileURLToPath(import.meta.url));
-// This test moved to `packages/fcstd/src` with the fcstd package extraction;
+// This test moved to `packages/faijs-freecad/src` with the fcstd package extraction;
 // the editor-owned op sources it pins still live in the core engine package.
 const coreSrcRoot = join(here, '..', '..', 'core', 'src');
 

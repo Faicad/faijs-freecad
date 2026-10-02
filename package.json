@@ -1,5 +1,5 @@
 {
-  "name": "@faicad/faijs-fcstd",
+  "name": "@faicad/faijs-freecad",
   "version": "0.27.0",
   "description": "FCStd reader and .fai.js conversion pipeline for faijs - unpack, sketch parse/solve, feature translate, batch CLI",
   "keywords": [
@@ -19,7 +19,7 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "faijs-fcstd-convert": "./dist/cli.js"
+    "faijs-freecad-convert": "./dist/cli.js"
   },
   "exports": {
     ".": {

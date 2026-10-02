@@ -11,7 +11,7 @@
  * stdout: exactly one JSON line (the summary). Human chatter is forbidden on
  * stdout; diagnostics go to stderr (which must stay empty on success).
  *
- * Run (published):  faijs-fcstd-convert <in.FCStd> [out.fai.zip]
+ * Run (published):  faijs-freecad-convert <in.FCStd> [out.fai.zip]
  * Run (in-repo):    npm run fcstd:convert -w @faicad/faijs -- <in.FCStd> [out.fai.zip]
  * With no <out>, acts as a dry audit (no file written).
  */
@@ -20,7 +20,7 @@ import { convertFcstdFile } from './convert.js';
 
 const [input, output] = process.argv.slice(2);
 if (!input) {
-  console.error('usage: faijs-fcstd-convert <in.FCStd> [out.fai.zip]');
+  console.error('usage: faijs-freecad-convert <in.FCStd> [out.fai.zip]');
   process.exit(1);
 }
 

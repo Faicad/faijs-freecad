@@ -8,7 +8,7 @@
  * sort dropped. A dependency-edge change that creates a cycle would show up
  * here rather than as a plausible `*-missing-*` reason.
  *
- * Usage: npx tsx packages/fcstd/scripts/sweep-gaps.ts [limit] [stride]
+ * Usage: npx tsx packages/faijs-freecad/scripts/sweep-gaps.ts [limit] [stride]
  */
 import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';

@@ -7,7 +7,7 @@
  * that is what happens, every edge becomes its own "contour" and no Draft contour
  * is ever closed, which would explain the 95% geometrically-open measurement.
  *
- * Usage: npx tsx packages/fcstd/scripts/probe-edge-continuity.ts <file.brp>
+ * Usage: npx tsx packages/faijs-freecad/scripts/probe-edge-continuity.ts <file.brp>
  */
 import { readFileSync } from 'node:fs';
 import { initOcctWasm } from '@faicad/faijs/occt-kernel/occtKernel';

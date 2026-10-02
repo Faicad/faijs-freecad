@@ -8,7 +8,7 @@ import { ALLOWED_DISPOSITIONS } from './convert.js';
 /**
  * CLI smoke test (2026-09-24, fcstd package extraction).
  *
- * The batch CLI (`src/cli.ts`, published bin `faijs-fcstd-convert`) is a thin
+ * The batch CLI (`src/cli.ts`, published bin `faijs-freecad-convert`) is a thin
  * wrapper around `convertFcstdFile`: it prints exactly one JSON summary line to
  * stdout, writes the zip only when `ok`, and maps the summary to exit codes
  * (0 converted / 2 gaps / 1 internal error). The pipeline contract is pinned
@@ -24,7 +24,7 @@ import { ALLOWED_DISPOSITIONS } from './convert.js';
  */
 
 const here = dirname(fileURLToPath(import.meta.url));
-// src → packages/fcstd → packages → repo root → D:/Faicad (sibling checkout).
+// src → packages/faijs-freecad → packages → repo root → D:/Faicad (sibling checkout).
 const FIXTURE_DIR = join(here, '..', '..', '..', '..', 'fcstd-port', 'test', 'FreeCAD', 'fixtures');
 const SAMPLE = join(FIXTURE_DIR, 'taperedballnose.fcstd');
 

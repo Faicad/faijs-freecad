@@ -11,7 +11,7 @@
  * regex and truncates each line to 220 chars — its trailing `// sN source`
  * comment is exactly what gets cut, which is why this one prints untruncated.
  *
- * Usage: node --import tsx packages/fcstd/scripts/probe-emitted-statements.ts "<doc.FCStd>"
+ * Usage: node --import tsx packages/faijs-freecad/scripts/probe-emitted-statements.ts "<doc.FCStd>"
  */
 import { convertFcstdFile } from '../src/convert.js';
 

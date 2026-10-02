@@ -19,7 +19,7 @@
  *
  * Every case is built from the SAME analytic data so the four are comparable.
  *
- * Usage: node --import tsx packages/fcstd/scripts/probe-draw-analytic.ts
+ * Usage: node --import tsx packages/faijs-freecad/scripts/probe-draw-analytic.ts
  */
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

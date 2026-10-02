@@ -42,7 +42,7 @@ installSketchSolver(createNodePlanegcsSolver);
 const CAD_NS = mergeDrawNamespace(mergeSketchNamespace(createApiNamespace()));
 
 const here = dirname(fileURLToPath(import.meta.url));
-// src → packages/fcstd → packages → repo root → D:/Faicad (sibling checkout).
+// src → packages/faijs-freecad → packages → repo root → D:/Faicad (sibling checkout).
 const CORPUS = join(here, '..', '..', '..', '..', 'FreeCAD-library');
 const REL = join(
   'Mechanical Parts', 'Chains', 'Sprocket', 'ISO 606', 'Simplex 1¾x1¼',

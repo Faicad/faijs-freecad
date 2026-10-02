@@ -7,7 +7,7 @@
  * source document (byte-exact `freecad/` shadow + every baked `.brp` carrier),
  * not by anything the container layer controls.
  *
- * usage: npx tsx packages/fcstd/scripts/probe-container-size.ts [fixtureDir]
+ * usage: npx tsx packages/faijs-freecad/scripts/probe-container-size.ts [fixtureDir]
  */
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';

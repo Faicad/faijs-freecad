@@ -13,7 +13,7 @@
  * largest intra-cluster separation, i.e. how far apart two points that a human
  * would call "the same corner" actually are after solving.
  *
- * Usage: npx tsx packages/fcstd/scripts/probe-sketch-loop.ts [rel] [sketchName]
+ * Usage: npx tsx packages/faijs-freecad/scripts/probe-sketch-loop.ts [rel] [sketchName]
  */
 import { readFileSync } from 'node:fs';
 import { unpackFcstd, memberText } from '../src/unpack.js';

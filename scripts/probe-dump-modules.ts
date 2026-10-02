@@ -7,7 +7,7 @@
  * filters by pattern); this one prints all modules unfiltered because the
  * failure line number is meaningful only against the exact emitted text.
  *
- * Usage: npx tsx packages/fcstd/scripts/probe-dump-modules.ts <file.FCStd> [moduleNameSubstring]
+ * Usage: npx tsx packages/faijs-freecad/scripts/probe-dump-modules.ts <file.FCStd> [moduleNameSubstring]
  */
 import { unzipSync, strFromU8 } from 'fflate';
 import { convertFcstdFile } from '../src/convert.js';

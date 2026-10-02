@@ -12,7 +12,7 @@
  * 'wire')` and running `wireframe(wire)` PER WIRE give ordered, chainable edge
  * polylines?
  *
- * Usage: npx tsx packages/fcstd/scripts/probe-wire-topology.ts <file.brp>
+ * Usage: npx tsx packages/faijs-freecad/scripts/probe-wire-topology.ts <file.brp>
  */
 import { readFileSync } from 'node:fs';
 import { initOcctWasm } from '@faicad/faijs/occt-kernel/occtKernel';

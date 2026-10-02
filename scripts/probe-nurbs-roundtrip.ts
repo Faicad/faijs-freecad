@@ -20,7 +20,7 @@
  *     a trim that lands exactly on the domain end must skip that side rather than
  *     call the kernel (otherwise `curveSplit: parameter out of range`).
  *
- * Usage: node --import tsx packages/fcstd/scripts/probe-nurbs-roundtrip.ts <shape.brp> [maxReport]
+ * Usage: node --import tsx packages/faijs-freecad/scripts/probe-nurbs-roundtrip.ts <shape.brp> [maxReport]
  */
 import { readFileSync } from 'node:fs';
 import { initOcctWasm } from '@faicad/faijs/occt-kernel/occtKernel';

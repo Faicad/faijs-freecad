@@ -14,7 +14,7 @@
  * It also reports the arc sweep range, because a `ccw` that got flipped turns a
  * short arc into its complement and can make the loop self-intersecting.
  *
- * Usage: node --import tsx packages/fcstd/scripts/probe-draft-loop.ts "<doc.FCStd>" [objectName]
+ * Usage: node --import tsx packages/faijs-freecad/scripts/probe-draft-loop.ts "<doc.FCStd>" [objectName]
  */
 import { readFileSync } from 'node:fs';
 import { unpackFcstd, memberText, parseDocumentXml } from '../src/index.js';

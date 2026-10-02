@@ -3,7 +3,7 @@
  * compound / sweep / draft call site with its line number. Used to locate the
  * exact statement that a runtime failure names ("statement N (callee: X)").
  *
- * Usage: npx tsx packages/fcstd/scripts/probe-stmt-window.ts <file.FCStd> <from> <to> [outFile]
+ * Usage: npx tsx packages/faijs-freecad/scripts/probe-stmt-window.ts <file.FCStd> <from> <to> [outFile]
  */
 import { unzipSync, strFromU8 } from 'fflate';
 import { writeFileSync } from 'node:fs';

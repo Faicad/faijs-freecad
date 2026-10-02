@@ -43,14 +43,14 @@ installSketchSolver(createNodePlanegcsSolver);
 
 // The host a real `.fai.zip` consumer must provide: platform + sketch + draw. Until
 // A1 (2026-09-29) the Draft emission called `cad.draw`, which is why
-// `@faicad/faijs-fcstd` declares `@faicad/faijs-draw` as a runtime dependency; the
+// `@faicad/faijs-freecad` declares `@faicad/faijs-draw` as a runtime dependency; the
 // contours now travel as `ProfileLoop` data, so that dependency is worth revisiting
 // (kept registered here because it is still declared and the host must match the
 // declared surface).
 const CAD_NS = mergeDrawNamespace(mergeSketchNamespace(createApiNamespace()));
 
 const here = dirname(fileURLToPath(import.meta.url));
-// src → packages/fcstd → packages → repo root → D:/Faicad (sibling checkout).
+// src → packages/faijs-freecad → packages → repo root → D:/Faicad (sibling checkout).
 const CORPUS = join(here, '..', '..', '..', '..', 'FreeCAD-library');
 
 const CASES = [

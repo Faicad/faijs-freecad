@@ -12,7 +12,7 @@
  * edge when the figure is a closed loop. Report coverage and whether the walk
  * closes, and the leftover edge count when it does not.
  *
- * Usage: npx tsx packages/fcstd/scripts/probe-edge-walk.ts <file.brp> [more.brp...]
+ * Usage: npx tsx packages/faijs-freecad/scripts/probe-edge-walk.ts <file.brp> [more.brp...]
  */
 import { readFileSync } from 'node:fs';
 import { initOcctWasm } from '@faicad/faijs/occt-kernel/occtKernel';

@@ -3,10 +3,10 @@
  *
  * Why it exists: every corpus verdict on disk (`faijs-invariants.jsonl`,
  * `parity-*.json`) was produced from `out/batch/*.fai.zip`, i.e. the codegen of
- * SOME EARLIER faijs revision. A code change in `packages/fcstd/src` is
+ * SOME EARLIER faijs revision. A code change in `packages/faijs-freecad/src` is
  * invisible to those artefacts until the corpus is converted AND executed AND
  * re-measured — and the fcstd-port side cannot do that from this workspace
- * (its `@faicad/faijs-fcstd` is a `file:` tgz, and its worker shells out to
+ * (its `@faicad/faijs-freecad` is a `file:` tgz, and its worker shells out to
  * `npx tsx`, which this sandbox blocks).
  *
  * So this runs the same three steps in-process, against THIS working tree:
@@ -31,7 +31,7 @@
  * recursive deletions per turn and refuses past 50, so corpus scratch never
  * lives in the repo.
  *
- * Usage (from packages/fcstd, no npx needed):
+ * Usage (from packages/faijs-freecad, no npx needed):
  *   node ../../node_modules/tsx/dist/cli.mjs scripts/rebased-sweep.ts \
  *     --only <list.txt> [--out <stepsDir>] [--limit N] [--report <json>]
  *

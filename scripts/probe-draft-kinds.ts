@@ -13,7 +13,7 @@
  * one line per edge kind, plus the NURBS summary for the parametric kinds. It is
  * read-only and reusable as the A4 library-wide inventory.
  *
- * Usage: node --import tsx packages/fcstd/scripts/probe-draft-kinds.ts "<doc.FCStd>"
+ * Usage: node --import tsx packages/faijs-freecad/scripts/probe-draft-kinds.ts "<doc.FCStd>"
  */
 import { readFileSync } from 'node:fs';
 import { unpackFcstd, memberText, parseDocumentXml } from '../src/index.js';

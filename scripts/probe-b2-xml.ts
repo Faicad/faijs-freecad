@@ -3,7 +3,7 @@
  * objects in an FCStd file, so translator branches can be checked against the
  * real serialization instead of the (possibly wrong) property-name assumption.
  *
- * Usage: npx tsx packages/fcstd/scripts/probe-b2-xml.ts <rel> [objName ...]
+ * Usage: npx tsx packages/faijs-freecad/scripts/probe-b2-xml.ts <rel> [objName ...]
  */
 import { readFileSync } from 'node:fs';
 import { unpackFcstd, memberText } from '../src/unpack.js';

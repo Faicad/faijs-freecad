@@ -8,7 +8,7 @@
  *   Q4 — does a batched array arg stay under the depth limit at 1500 points?
  *   Q5 — does `cad.draw` work when fed TWO contours in one session?
  *
- * Usage: npx tsx packages/fcstd/scripts/probe-draw-design.ts
+ * Usage: npx tsx packages/faijs-freecad/scripts/probe-draw-design.ts
  */
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

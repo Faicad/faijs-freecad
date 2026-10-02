@@ -10,7 +10,7 @@
  * convert-time reason does not say which. This probe prints the raw expression
  * plus what the evaluator managed to resolve.
  *
- * Usage: npx tsx packages/fcstd/scripts/probe-b1-expr.ts [rel] [objName]
+ * Usage: npx tsx packages/faijs-freecad/scripts/probe-b1-expr.ts [rel] [objName]
  */
 import { readFileSync } from 'node:fs';
 import { unpackFcstd, memberText } from '../src/unpack.js';

@@ -16,7 +16,7 @@ import { cliRun } from '@faicad/faijs/node';
  * The in-flight 10h re-baseline (fcstd-port/state/manifest.jsonl) runs against
  * the PUBLISHED faicad-faijs-0.15.1.tgz, which predates this commit, so it
  * cannot exercise P2-3. This test runs entirely from monorepo source: the
- * conversion path imports packages/fcstd source (P2-3 live), while execution
+ * conversion path imports packages/faijs-freecad source (P2-3 live), while execution
  * goes through @faicad/faijs/node (core dist — sweep/loft/helix kernel ops
  * already shipped in 0.15.1, unaffected by this change).
  *
@@ -26,7 +26,7 @@ import { cliRun } from '@faicad/faijs/node';
  */
 
 const here = dirname(fileURLToPath(import.meta.url));
-// src → packages/fcstd → packages → repo root → D:/Faicad (sibling checkout).
+// src → packages/faijs-freecad → packages → repo root → D:/Faicad (sibling checkout).
 const CORPUS = join(here, '..', '..', '..', '..', 'FreeCAD-library');
 const TARGET_TYPES = new Set(['Part::Sweep', 'Part::Loft', 'Part::Helix']);
 

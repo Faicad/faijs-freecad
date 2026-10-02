@@ -7,7 +7,7 @@
  * `keepGappedContainer` and reads `mapping.json` so the culprit chain
  * (e.g. Loft002 -> Sketch262 -> ...) is visible in one shot.
  *
- * Usage: npx tsx packages/fcstd/scripts/probe-b2-beds.ts [rel-under-D:/Faicad/FreeCAD-library]
+ * Usage: npx tsx packages/faijs-freecad/scripts/probe-b2-beds.ts [rel-under-D:/Faicad/FreeCAD-library]
  */
 import { unzipSync, strFromU8 } from 'fflate';
 import { convertFcstdFile } from '../src/convert.js';

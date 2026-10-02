@@ -13,7 +13,7 @@
  * 只读：不写仓库内文件，草稿目录落在 `os.tmpdir()`（safe-delete shim 对临时
  * 目录整体豁免）。
  *
- * Usage: npx tsx packages/fcstd/scripts/probe-a2-fillet-baseline.ts <file.FCStd>
+ * Usage: npx tsx packages/faijs-freecad/scripts/probe-a2-fillet-baseline.ts <file.FCStd>
  */
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

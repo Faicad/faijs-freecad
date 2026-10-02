@@ -30,7 +30,7 @@ import { readZipEntries } from '@faicad/faijs/io/zip';
 import { convertFcstdFile } from './convert.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
-// src → packages/fcstd → packages → repo root → D:/Faicad (sibling checkout).
+// src → packages/faijs-freecad → packages → repo root → D:/Faicad (sibling checkout).
 const CORPUS = join(here, '..', '..', '..', '..', 'FreeCAD-library');
 
 const CASES = [

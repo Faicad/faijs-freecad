@@ -12,7 +12,7 @@
  *
  * 串行、只读仓库（草稿目录落 `os.tmpdir()`）。
  *
- * Usage: npx tsx packages/fcstd/scripts/probe-a2-exec-sweep.ts [limit]
+ * Usage: npx tsx packages/faijs-freecad/scripts/probe-a2-exec-sweep.ts [limit]
  */
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

@@ -13,7 +13,7 @@
  * Only (1) and (2) are real defects. This probe prints which one it is, plus a
  * case-insensitive candidate lookup so a name-casing mismatch is visible.
  *
- * Usage: npx tsx packages/fcstd/scripts/probe-shape-asset.ts [rel] [objName]
+ * Usage: npx tsx packages/faijs-freecad/scripts/probe-shape-asset.ts [rel] [objName]
  */
 import { readFileSync } from 'node:fs';
 import { unpackFcstd, memberText } from '../src/unpack.js';

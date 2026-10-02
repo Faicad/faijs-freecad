@@ -13,7 +13,7 @@
  * re-measurement of points the converter had already decided about. Reading the
  * emitted call kind is both simpler and truer to what the run time will build.
  *
- * Usage: npx tsx packages/fcstd/scripts/probe-contour-closure.ts [productsRoot]
+ * Usage: npx tsx packages/faijs-freecad/scripts/probe-contour-closure.ts [productsRoot]
  *   (default `out/insp2`: one sub-directory per product, each with model/main.fai.js)
  */
 import { readFileSync, readdirSync } from 'node:fs';

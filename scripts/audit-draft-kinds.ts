@@ -17,7 +17,7 @@
  *
  * Read-only: reads documents, writes one JSON + prints a stream log.
  *
- * Usage: node --import tsx packages/fcstd/scripts/audit-draft-kinds.ts <corpusRoot> [outJson]
+ * Usage: node --import tsx packages/faijs-freecad/scripts/audit-draft-kinds.ts <corpusRoot> [outJson]
  */
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';

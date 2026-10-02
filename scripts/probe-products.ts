@@ -2,7 +2,7 @@
  * Probe: for each converted product, actually EXECUTE it (the only valid
  * criterion per the project rules — a gap-free summary proves nothing).
  *
- * Usage: npx tsx packages/fcstd/scripts/probe-products.ts <list.txt>
+ * Usage: npx tsx packages/faijs-freecad/scripts/probe-products.ts <list.txt>
  *   list.txt: one corpus-relative (or absolute) FCStd path per line.
  */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
