@@ -723,6 +723,52 @@ describe('M5 codegen', () => {
     expect(r.rootVar).toBe('assembly');
   });
 
+  // D4c (Duct_linear_rectangular_circular_complet, 2026-10-02): an `import`
+  // inside the statement flow is a parser error ("import/export at top
+  // level") — every generated module must keep its imports BEFORE any `let`
+  // statement (they are, since D4a: imports are the first lines after the
+  // generated-by header).
+  it('emits imports only at the top of every generated module, never mid-statement (D4c)', () => {
+    const mkBody = (name: string, members: string[]): FcstdObject => {
+      const b = simpleObj('PartDesign::Body', name);
+      b.properties.set('Group', {
+        name: 'Group', type: 'App::PropertyLinkList', tagName: 'Property',
+        children: [{
+          name: 'LinkList', type: '', tagName: 'LinkList',
+          children: members.map((m) => ({
+            name: 'Link', type: '', tagName: 'Link', children: [], valueXml: '', valueText: '', attributes: { value: m },
+          })),
+          valueXml: '', valueText: '', attributes: { count: String(members.length) },
+        }],
+      });
+      return b;
+    };
+    const doc: FcstdDocument = {
+      objects: [
+        mkBody('Body', ['Pad']),
+        mkBody('Body001', ['Pad001']),
+        simpleObj('PartDesign::Pad', 'Pad', {}),
+        simpleObj('PartDesign::Pad', 'Pad001', {}),
+      ],
+      typeIndex: new Map(),
+      meta: new Map(),
+    };
+    const r = generateModel(doc, new Map(), NO_CONTOURS, 't');
+    const checkTopOnly = (name: string, code: string): void => {
+      const lines = code.split('\n');
+      let seenStatement = false;
+      for (let i = 0; i < lines.length; i++) {
+        const l = lines[i];
+        if (/^\s*import /.test(l)) {
+          expect(seenStatement, `${name} L${i + 1}: import after a statement`).toBe(false);
+        }
+        if (/^let /.test(l)) seenStatement = true;
+      }
+    };
+    checkTopOnly('main', r.code);
+    for (const f of r.files) checkTopOnly(f.path, f.code);
+  });
+
   // M-B1 (2026-10-01): single-Body docs must produce EXACTLY ONE terminal.
   // The Body module's terminal is named `assembly` (not `Body_out`) and the
   // aggregate entry imports it directly — there is NO `let assembly = Body_out;`
