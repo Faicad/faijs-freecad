@@ -857,6 +857,58 @@ describe('M5 codegen', () => {
     expect(cut!.inputs[1]).not.toBe('Body');
   });
 
+  // D4a (SEC_FREE_IDENT corpus, 2026-10-02): a Body feature that consumes a
+  // sketch INTERNAL to ANOTHER Body must STAY in its own Body module and gain
+  // a named import for the foreign var. The old routing pushed any cross-Body
+  // call to main, where the foreign internal var was neither declared nor
+  // imported → SEC_FREE_IDENT ("Sketch007" / "Chamfer" unknown), and the
+  // owning Body then referenced a main variable it could not see (cycle).
+  // Corpus: ComputerDesk (Sketch007 in Body007, Revolution001 in Body008),
+  // Nut Tuerca M3 (Chamfer in Body001), Screw tornillo (Chamfer001 in Body002).
+  it('a Body feature consuming another Body\'s internal var stays home and imports it (D4a)', () => {
+    const mkBody = (name: string, members: string[]): FcstdObject => {
+      const b = simpleObj('PartDesign::Body', name);
+      b.properties.set('Group', {
+        name: 'Group', type: 'App::PropertyLinkList', tagName: 'Property',
+        children: [{
+          name: 'LinkList', type: '', tagName: 'LinkList',
+          children: members.map((m) => ({
+            name: 'Link', type: '', tagName: 'Link', children: [], valueXml: '', valueText: '', attributes: { value: m },
+          })),
+          valueXml: '', valueText: '', attributes: { count: String(members.length) },
+        }],
+        valueXml: '', valueText: '', attributes: {},
+      });
+      return b;
+    };
+    const doc: FcstdDocument = {
+      objects: [
+        mkBody('Body', ['Sketch', 'Revolution']),
+        mkBody('Body001', ['Revolution001']),
+        simpleObj('Sketcher::SketchObject', 'Sketch', {}),
+        simpleObj('PartDesign::Revolution', 'Revolution', { Profile: { value: 'Sketch' } }),
+        simpleObj('PartDesign::Revolution', 'Revolution001', { Profile: { value: 'Sketch' } }),
+      ],
+      typeIndex: new Map(),
+      meta: new Map(),
+    };
+    const r = generateModel(
+      doc,
+      new Map([
+        ['Sketch', { level: 'L0' as const, loopCount: 1 }],
+      ]),
+      new Map([['Sketch', square()]]),
+      't',
+    );
+    const body = r.files.find((f) => f.body === 'Body001');
+    expect(body, 'Body001 module must exist').toBeDefined();
+    // the call stays in Body001 and imports the foreign sketch from Body
+    expect(body!.code).toContain(`import { Sketch } from './Body.fai.js';`);
+    expect(body!.code).toContain('let Revolution001 = cad.revolve(Sketch,');
+    // main must NOT reference the internal sketch as a free identifier
+    expect(r.code).not.toMatch(/cad\.\w+\(Sketch[,)]/);
+  });
+
   // GOTCHA (EngineBlock corpus, 2026-09-20): a Part::Extrusion whose Base is
   // a Draft circle (Part::Part2DObjectPython with a Shape asset) — the
   // shape-asset import makes the base an addressable variable and the

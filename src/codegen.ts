@@ -945,12 +945,33 @@ export function generateModel(
       // NOTE: Body-chain fold calls (union/subtract emitted during folding)
       // are NOT in `results`, so `own` is undefined for them — the main-input
       // check must not depend on `own`.
-      const mixed = inputBodies.some((ib) => ib !== b) || (own !== undefined && viaInput !== undefined && viaInput !== own);
+      //
+      // D4a (SEC_FREE_IDENT corpus, 2026-10-02): the "push cross-module to
+      // main" rule above ASSUMED main can see every cross-module input. It
+      // cannot: an input that is an INTERNAL var of another Body (Body007's
+      // `Sketch007`, Body001's `Chamfer`) is neither a terminal nor imported
+      // into main, so the call landed in main with a free identifier AND the
+      // owning Body (`Body008_out = Revolution001`) referenced a main var it
+      // could not see (circular). Fix: a call WITH a known own Body STAYS in
+      // that Body even when its inputs come from other modules — the body
+      // file gains a named import for each foreign input (see
+      // `bodyExtraImports` below). Only calls with NO own Body (loose Part
+      // features, fold calls) keep the old "must be visible where they run"
+      // rule and go to main when their inputs are not local.
+      const foreignInBody = inputBodies.some((ib) => ib !== b);
+      // A loose call with no own Body cannot stay anywhere but main; an
+      // own'd call stays home and imports what it needs (D4a).
+      const mixed = own === undefined && foreignInBody;
       const touchesMain = c.inputs.some((i) => mainOuts.has(i));
-      if (b !== undefined && bodiesWithGeo.has(b) && !mixed && !touchesMain && (own === undefined || own === b)) {
-        if (!perBody.has(b)) perBody.set(b, []);
-        perBody.get(b)!.push(c);
-        assigned.set(c.out, b);
+      const staysHome = own !== undefined && bodiesWithGeo.has(own) && !touchesMain;
+      if (staysHome || (b !== undefined && bodiesWithGeo.has(b) && !mixed && !touchesMain && (own === undefined || own === b))) {
+        // D4a: when a call stays home (own Body), it lands in ITS OWN Body —
+        // not in `b`, which is the input's Body. `b` only governs the loose
+        // (no-own) path.
+        const target = staysHome ? own! : b!;
+        if (!perBody.has(target)) perBody.set(target, []);
+        perBody.get(target)!.push(c);
+        assigned.set(c.out, target);
       } else {
         mainPending.push(c);
         mainOuts.add(c.out);
@@ -971,7 +992,36 @@ export function generateModel(
         ...bodyCalls,
         { out: termName, op: 'identity', source: b, inputs: [head], params: {} } as CadCall,
       ];
-      files.push({ path: `model/${b}.fai.js`, code: lowerBody(withTerminal, `${baseName}/${b}`, b, params), body: b });
+      // D4a: this Body's calls may consume a var that lives in ANOTHER Body
+      // module (an internal var such as Body007's `Sketch007`) — those are
+      // bound by a named import from the owning module (same D6 contract as
+      // the terminal). A var that lives in MAIN cannot be imported here
+      // without a cycle; `touchesMain` above already routes such calls to
+      // main, so no body call can reference a main output.
+      const bodyImports = new Map<string, Set<string>>(); // owner body → names
+      for (const c of withTerminal) {
+        const refs: string[] = [...c.inputs];
+        const m = (c.params as { members?: unknown } | undefined)?.members;
+        if (Array.isArray(m)) for (const x of m) if (typeof x === 'string') refs.push(x);
+        for (const ref of refs) {
+          const ob = assigned.get(ref);
+          if (ob !== undefined && ob !== b) {
+            if (!bodyImports.has(ob)) bodyImports.set(ob, new Set());
+            bodyImports.get(ob)!.add(ref);
+          }
+        }
+      }
+      files.push({
+        path: `model/${b}.fai.js`,
+        code: lowerBody(
+          withTerminal,
+          `${baseName}/${b}`,
+          b,
+          params,
+          [...bodyImports].flatMap(([owner, vars]) => [...vars].map((v) => ({ v, owner }))),
+        ),
+        body: b,
+      });
     }
     // main.fai.js: aggregate the per-Body terminals via cad.compound. M10c:
     // cross-file references close through the standard relative-import
@@ -991,6 +1041,36 @@ export function generateModel(
         const tname = singleBody ? 'assembly' : `${b}_out`;
         lines.push(`import { ${tname} } from './${b}.fai.js'; // module ${b}`);
       }
+    }
+    // D4a (SEC_FREE_IDENT): a call routed to MAIN may consume an input that is
+    // an INTERNAL variable of another Body module (e.g. `Chamfer` defined in
+    // Body001, `Sketch007` in Body007) rather than that Body's terminal. The
+    // routing (`mixed`: own Body ≠ input Body) moves the call to main, but main
+    // is only wired to each Body's terminal alias — so the internal var was
+    // emitted as a bare identifier with no declaration/import → the parser
+    // killed the file (SEC_FREE_IDENT) or the ESM import was missing.
+    // Fix: for every main call input that `assigned` to a Body, add a named
+    // import from that Body module. The var IS a top-level `let` there, so a
+    // named import binds it (module-registry D6 same contract as the terminal).
+    // Only identifiers actually referenced by mainCalls are imported, and the
+    // terminal names already imported above are skipped (no duplicate binding).
+    const mainRefs = new Set<string>();
+    for (const c of mainCalls) {
+      for (const inp of c.inputs) mainRefs.add(inp);
+      const m = (c.params as { members?: unknown } | undefined)?.members;
+      if (Array.isArray(m)) for (const x of m) if (typeof x === 'string') mainRefs.add(x);
+    }
+    const extraImports = new Map<string, Set<string>>(); // body → var names
+    for (const ref of mainRefs) {
+      const ob = assigned.get(ref);
+      if (!ob) continue;
+      const term = singleBody ? 'assembly' : `${ob}_out`;
+      if (ref === term) continue; // already imported above
+      if (!extraImports.has(ob)) extraImports.set(ob, new Set());
+      extraImports.get(ob)!.add(ref);
+    }
+    for (const [b, vars] of extraImports) {
+      for (const v of vars) lines.push(`import { ${v} } from './${b}.fai.js'; // cross-module (D4a)`);
     }
     // C1/C2/C4: `const p_*` must precede every use (a `const` is not hoisted? it
     // is, but TDZ still bites), so the block goes after the imports. The id
@@ -1018,26 +1098,37 @@ export function generateModel(
 }
 
 /** M10.3 — lower one Body's calls; the last entry is the terminal alias
- * `<Body>_out` (plain JS assignment — faijs has no identity op). */
+ * `<Body>_out` (plain JS assignment — faijs has no identity op).
+ *
+ * `crossImports` (D4a) lists foreign var names this Body consumes, each with
+ * its owning Body module — emitted as named imports at the top so a call that
+ * lives here can reference an internal var defined in another Body file. */
 function lowerBody(
   calls: CadCall[],
   label: string,
   body: string,
   params?: readonly LeafParam[],
+  crossImports?: readonly { v: string; owner: string }[],
 ): string {
   const lines: string[] = [];
   lines.push(`// Generated by faijs FCStd port — ${label}`);
   lines.push(`// Units: mm (faijs contract; FCStd internal units are mm)`);
+  if (crossImports && crossImports.length > 0) {
+    for (const { v, owner } of crossImports) {
+      lines.push(`import { ${v} } from './${owner}.fai.js'; // cross-module (D4a)`);
+    }
+  }
   // C1/C2/C4: the parameter block precedes every use.
   const plines = paramLines(params, calls.map((c) => `${c.op} ${renderArgs(c)}`).join('\n'));
   for (const p of plines) lines.push(p);
+  const idBase = lines.length;
   for (const call of calls) {
     if (call.op === 'identity') {
       // terminal alias: `let <Body>_out = <chain head>;`
       lines.push(`let ${call.out} = ${call.inputs[0]}; // s? ${body} terminal`);
       continue;
     }
-    const id = `s${lines.length - 2 - plines.length}`;
+    const id = `s${lines.length - idBase - plines.length}`;
     lines.push(`let ${call.out} = ${call.op}(${renderArgs(call)}); // ${id} ${call.source}`);
   }
   return lines.join('\n') + '\n';

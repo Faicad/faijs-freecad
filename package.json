@@ -54,7 +54,8 @@
     "vitest": "*",
     "occt-wasm": "^3.8.4",
     "three": "^0.184.0",
-    "@types/three": "^0.184.1"
+    "@types/three": "^0.184.1",
+    "acorn": "^8.18.0"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node ../../scripts/fix-import-extensions.mjs dist",
