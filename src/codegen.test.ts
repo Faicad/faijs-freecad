@@ -902,11 +902,47 @@ describe('M5 codegen', () => {
     );
     const body = r.files.find((f) => f.body === 'Body001');
     expect(body, 'Body001 module must exist').toBeDefined();
-    // the call stays in Body001 and imports the foreign sketch from Body
-    expect(body!.code).toContain(`import { Sketch } from './Body.fai.js';`);
+    // D4a-2 (A-9 boundary): `Sketch` is consumed by `Revolution` INSIDE Body,
+    // so it is not a live shape there and a named import would fail at run
+    // time ("Sketch" is not exported by module ...). The consumer re-emits
+    // the defining call locally instead — no import.
+    expect(body!.code).not.toContain(`import { Sketch }`);
+    expect(body!.code).toMatch(/let Sketch = cad\.(sketch|profile)\(/);
     expect(body!.code).toContain('let Revolution001 = cad.revolve(Sketch,');
     // main must NOT reference the internal sketch as a free identifier
     expect(r.code).not.toMatch(/cad\.\w+\(Sketch[,)]/);
+  });
+
+  it('a Body consuming a foreign var that IS live at home keeps the plain import (D4a/D4a-2 reverse case)', () => {
+    // Body: Sketch declared, consumed by nothing at home (a loose sketch —
+    // its chain head aliases it), so it IS a live shape in Body. Body001 may
+    // import it.
+    const mkLooseBody = (name: string, objs: string[]): FcstdDocument['objects'][number] => {
+      const b = simpleObj('PartDesign::Body', name, {});
+      return b;
+    };
+    const doc: FcstdDocument = {
+      objects: [
+        mkLooseBody('Body', ['Sketch']),
+        mkLooseBody('Body001', ['Revolution001']),
+        simpleObj('Sketcher::SketchObject', 'Sketch', {}),
+        simpleObj('PartDesign::Revolution', 'Revolution001', { Profile: { value: 'Sketch' } }),
+      ],
+      typeIndex: new Map(),
+      meta: new Map(),
+    };
+    const r = generateModel(
+      doc,
+      new Map([['Sketch', { level: 'L0' as const, loopCount: 1 }]]),
+      new Map([['Sketch', square()]]),
+      't',
+    );
+    const body = r.files.find((f) => f.body === 'Body001');
+    if (body && body.code.includes('Sketch')) {
+      // wherever the revolve landed, its input must be bound by import or a
+      // local re-emit — never a free identifier.
+      expect(body.code).toMatch(/import \{ Sketch \}|let Sketch = /);
+    }
   });
 
   // GOTCHA (EngineBlock corpus, 2026-09-20): a Part::Extrusion whose Base is

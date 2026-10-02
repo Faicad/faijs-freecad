@@ -928,6 +928,53 @@ export function generateModel(
       headToTerminal.set(chainVar.get(b)!, singleBody ? 'assembly' : `${b}_out`);
       headToBody.set(chainVar.get(b)!, b);
     }
+    // D4a-2 bookkeeping over the full plan: every var's defining call, and
+    // which Body consumed it with a real op (NOT a terminal-alias identity).
+    // A shape consumed by an op at home is not in that home module's live
+    // shapes (A-9) — importing it from a sibling Body fails at run time, so
+    // the consumer must re-emit the defining call locally instead.
+    const defByOut = new Map<string, CadCall>();
+    for (const c of calls) defByOut.set(c.out, c);
+    const consumedByOpAt = new Map<string, Set<string>>(); // var → bodies consuming it by op
+    // GOTCHA (D4a-3, Precast_Beam): a JsExpr param (`upTo: cad.faceRef(Pad010, 1)`)
+    // embeds a VARIABLE REFERENCE as free text — `c.inputs` does not list it, so
+    // a consumer that only scans `inputs` misses the dependency and the var is
+    // neither imported nor re-emitted (SEC_FREE_IDENT at run time). Scan JsExpr
+    // text for identifiers that name a known plan var.
+    const knownVars = new Set<string>();
+    const addKnown = (v: string | undefined): void => {
+      if (v) knownVars.add(v);
+    };
+    for (const c of calls) {
+      addKnown(c.out);
+      for (const i of c.inputs) knownVars.add(i);
+    }
+    const jsExprRefs = (c: CadCall): string[] => {
+      const out: string[] = [];
+      const scan = (v: unknown): void => {
+        if (v === null || v === undefined) return;
+        if (typeof v === 'string') return;
+        if (Array.isArray(v)) return void v.forEach(scan);
+        if (typeof v === 'object') {
+          if (isJsExpr(v)) {
+            for (const m of (v.__jsExpr as string).matchAll(/[A-Za-z_$][\w$]*/g)) {
+              if (knownVars.has(m[0])) out.push(m[0]);
+            }
+            return;
+          }
+          return void Object.values(v as Record<string, unknown>).forEach(scan);
+        }
+      };
+      scan(c.params);
+      scan(c.literals);
+      return out;
+    };
+    const inputsOf = (c: CadCall): readonly string[] => {
+      const refs: string[] = [...c.inputs, ...jsExprRefs(c)];
+      const m = (c.params as { members?: unknown } | undefined)?.members;
+      if (Array.isArray(m)) for (const x of m) if (typeof x === 'string') refs.push(x);
+      return refs;
+    };
     const mainPending: CadCall[] = [];
     const mainOuts = new Set<string>();
     for (const c of calls) {
@@ -980,6 +1027,20 @@ export function generateModel(
     for (const c of mainPending) {
       mainCalls.push({ ...c, inputs: c.inputs.map((i) => headToTerminal.get(i) ?? i) });
     }
+    // D4a-2 scan (after routing): which Body consumed each var with a real op
+    // (NOT a terminal-alias identity). A shape consumed by an op at home is
+    // not in that home module's live shapes (A-9) — importing it from a
+    // sibling Body fails at run time, so the consumer must re-emit the
+    // defining call locally instead.
+    for (const c of calls) {
+      if (c.op === 'identity') continue; // terminal alias — keeps the source live
+      const at = assigned.get(c.out) ?? callBody.get(c.out);
+      if (at === undefined) continue;
+      for (const ref of inputsOf(c)) {
+        if (!consumedByOpAt.has(ref)) consumedByOpAt.set(ref, new Set());
+        consumedByOpAt.get(ref)!.add(at);
+      }
+    }
     for (const b of bodiesWithGeo) {
       const bodyCalls = perBody.get(b) ?? [];
       // terminal: alias the chain head so the aggregate entry has a stable,
@@ -992,18 +1053,42 @@ export function generateModel(
         ...bodyCalls,
         { out: termName, op: 'identity', source: b, inputs: [head], params: {} } as CadCall,
       ];
-      // D4a: this Body's calls may consume a var that lives in ANOTHER Body
-      // module (an internal var such as Body007's `Sketch007`) — those are
-      // bound by a named import from the owning module (same D6 contract as
-      // the terminal). A var that lives in MAIN cannot be imported here
-      // without a cycle; `touchesMain` above already routes such calls to
-      // main, so no body call can reference a main output.
+      // D4a/D4a-2 (SEC_FREE_IDENT corpus, 2026-10-02): this Body's calls may
+      // consume a var that lives in ANOTHER Body module. D4a bound those with
+      // a named import — but A-9 says a shape consumed INSIDE its owning
+      // module by a real op is NOT in that module's live shapes ("Sketch007"
+      // is not exported by module ...), so the import only clears the parser
+      // and still fails at run time. D4a-2: for such vars the consumer
+      // RE-EMITS the defining call locally (same var name — each module is
+      // its own scope); only genuinely-live foreign vars (terminals, chain
+      // heads, vars no op consumed at home) keep the plain-import path.
       const bodyImports = new Map<string, Set<string>>(); // owner body → names
+      const reemit = new Map<string, CadCall>(); // var → defining call to clone locally
+      const localNames = new Set(withTerminal.map((c) => c.out));
+      const queue = withTerminal.flatMap(inputsOf);
+      const visited = new Set<string>();
+      while (queue.length > 0) {
+        const ref = queue.pop()!;
+        if (visited.has(ref)) continue;
+        visited.add(ref);
+        // D4a-3: `assigned` only holds Body-routed outs — a var routed to MAIN
+        // (mainPending) has no entry, yet Body-side calls can reference it
+        // (Precast_Beam's Body011 consumes main's `Pad010`). Treat main as a
+        // pseudo-owner here. Main vars are ALWAYS re-emitted rather than
+        // imported: a Body→main import would close a cycle (main imports the
+        // Body's terminal), which module-registry does not support.
+        const ob = assigned.get(ref) ?? (mainOuts.has(ref) ? 'main' : undefined);
+        if (ob === undefined || ob === b) continue;
+        if (ob !== 'main' && !consumedByOpAt.get(ref)?.has(ob)) continue; // live shape at home → importable
+        const def = defByOut.get(ref);
+        if (!def || localNames.has(ref)) continue;
+        reemit.set(ref, def);
+        localNames.add(ref);
+        queue.push(...inputsOf(def)); // transitive: the clone's inputs may be foreign-consumed too
+      }
       for (const c of withTerminal) {
-        const refs: string[] = [...c.inputs];
-        const m = (c.params as { members?: unknown } | undefined)?.members;
-        if (Array.isArray(m)) for (const x of m) if (typeof x === 'string') refs.push(x);
-        for (const ref of refs) {
+        for (const ref of inputsOf(c)) {
+          if (reemit.has(ref)) continue; // satisfied by the local re-emit
           const ob = assigned.get(ref);
           if (ob !== undefined && ob !== b) {
             if (!bodyImports.has(ob)) bodyImports.set(ob, new Set());
@@ -1011,10 +1096,28 @@ export function generateModel(
           }
         }
       }
+      // Interleave each re-emit before its first local consumer (let TDZ);
+      // clones appear in `calls` topo order relative to each other.
+      const finalCalls: CadCall[] = [];
+      const emitted = new Set<string>();
+      const ensureReemits = (refs: readonly string[]): void => {
+        for (const ref of refs) {
+          if (emitted.has(ref)) continue;
+          const def = reemit.get(ref);
+          if (!def) continue;
+          ensureReemits(inputsOf(def));
+          emitted.add(ref);
+          finalCalls.push(def);
+        }
+      };
+      for (const c of withTerminal) {
+        ensureReemits(inputsOf(c));
+        finalCalls.push(c);
+      }
       files.push({
         path: `model/${b}.fai.js`,
         code: lowerBody(
-          withTerminal,
+          finalCalls,
           `${baseName}/${b}`,
           b,
           params,
