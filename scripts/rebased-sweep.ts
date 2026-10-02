@@ -72,6 +72,10 @@ const MANIFEST = resolve(arg('--manifest') ?? 'D:/Faicad/fcstd-port/state/manife
 const OUT = resolve(arg('--out') ?? 'D:/Faicad/fcstd-port/out/rebased-steps');
 const REPORT = resolve(arg('--report') ?? join(repoRoot, 'out', 'rebased-sweep.json'));
 const limit = arg('--limit') ? Number(arg('--limit')) : Infinity;
+// Sharding: the OCCT wasm heap keeps growing across products inside one
+// process, so a long list is run as several short invocations (`--skip N
+// --limit M`) instead of one — each shard gets a fresh heap.
+const skip = arg('--skip') ? Number(arg('--skip')) : 0;
 
 /** rel (`/`-separated, lowercased) → product stem (`<sha12>-<base>`). */
 const manifest = existsSync(MANIFEST)
@@ -93,7 +97,8 @@ function norm(p: string): string {
 const targets = readFileSync(onlyList, 'utf8')
   .split('\n')
   .map((l) => l.trim())
-  .filter((l) => l && !l.startsWith('#'));
+  .filter((l) => l && !l.startsWith('#'))
+  .slice(skip, limit === Infinity ? undefined : skip + limit);
 
 mkdirSync(OUT, { recursive: true });
 

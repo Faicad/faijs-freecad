@@ -14,7 +14,7 @@
  * `cad.translate` / `cad.rotate_euler`（编辑器交互 op，JSDoc 已 @deprecated）。
  */
 import type { FcstdDocument } from './document.js';
-import type { CadCall, TranslateVerdict } from './feature-translate.js';
+import type { CadCall, JsExpr, TranslateVerdict } from './feature-translate.js';
 import {
   translateObject, isJsExpr, jsExpr, BODY_CHAIN_BASE,
   LINK_INPUT_PROPS, LINK_LIST_INPUT_PROPS,
@@ -678,6 +678,50 @@ export function generateModel(
         // Only the PARAMETRIC `cad.sketch` path emits the plane frame; the A5
         // fallback (`cad.profile`) still needs the M8.3 re-orientation.
         (sketchLink !== undefined ? (sketchInputs?.get(sketchLink)?.geoms.length ?? 0) : 0) > 0;
+      // C3-D2 (2026-10-02, Sliding_door): A3 puts the parametric profile face in
+      // WORLD frame (`plane: { origin, normal, xAxis }`), yet feature-translate
+      // still emits `cad.extrude(profile, [0, 0, len])` — sketch-LOCAL +Z. That
+      // contract assumed the M8.3 `cad.place` re-orientation that the guard above
+      // now suppresses, so for any sketch whose plane normal is not +Z the prism
+      // is extruded inside its own plane: a zero-thickness sheet whose faces then
+      // carry no extrude role lineage (D2's `edgeRef: adjacent face ordinal N has
+      // no role lineage`). Rotate the extrude direction onto the plane normal.
+      if (sketchCarriesFrame && sketchLinkPlacement) {
+        const { n } = planeBasis(sketchLinkPlacement);
+        const reversed =
+          obj.properties.get('Reversed')?.children[0]?.attributes['value'] === 'true';
+        for (const c of calls.slice(-verdict.calls.length)) {
+          if (c.op !== 'cad.extrude') continue;
+          const vec = c.literals?.[0];
+          // Object-form calls (up-to) carry no direction vector; their plane
+          // target is already emitted in the same frame as the profile.
+          if (!Array.isArray(vec)) continue;
+          const len = vec[2];
+          if (len === undefined) continue;
+          let length: number | JsExpr = len as number | JsExpr;
+          let sign = reversed ? -1 : 1;
+          if (typeof len === 'number') {
+            sign = len < 0 ? -1 : 1;
+            length = Math.abs(len);
+          } else if (isJsExpr(len)) {
+            // `symNeg` renders a reversed symbolic length as `-(expr)`. Strip it
+            // rather than emitting a negative length (extrude requires
+            // length > 0) — the sign travels into the direction instead.
+            const neg = /^-\(([\s\S]*)\)$/.exec(len.__jsExpr);
+            if (neg) {
+              length = jsExpr(neg[1]!);
+              sign = -1;
+            }
+          }
+          const dir = [n[0] * sign, n[1] * sign, n[2] * sign].map((x) => (Object.is(x, -0) ? 0 : x)) as [
+            number,
+            number,
+            number,
+          ];
+          c.params = { ...(c.params ?? {}), length, normal: dir };
+          c.literals = undefined;
+        }
+      }
       if (lastVar && pl && !isIdentityPlacement(pl) && !isPrePlaced && !sketchCarriesFrame && reorientVar) {
         // Single rigid placement: rotate (quaternion about local origin) +
         // translate = FreeCAD Placement(P,Q). Emit `cad.place` with the ORIGINAL

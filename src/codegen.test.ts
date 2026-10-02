@@ -6,6 +6,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { generateModel } from './codegen.js';
+import { planeBasis } from './placement.js';
 import type { Contour } from '@faicad/faijs-sketch';
 import type { FcstdDocument, FcstdObject, FcstdProperty } from './document.js';
 
@@ -232,6 +233,73 @@ describe('M5 codegen', () => {
     );
     expect(r.code).toMatch(/cad\.place\(/);
     expect(r.code).toContain('position: [0,0,250]');
+  });
+
+  // C3-D2 (2026-10-02, Sliding_door): once A3 framed the profile sketch, the
+  // face is in WORLD frame, so the Pad must extrude along the sketch plane
+  // NORMAL. `feature-translate` emits sketch-local +Z (`[0, 0, len]`), a
+  // contract that assumed the M8.3 `cad.place` re-orientation C3a suppresses;
+  // for any normal other than +Z the prism is then extruded inside its own
+  // plane — a zero-thickness sheet whose faces carry no extrude role lineage
+  // (D2: `edgeRef: adjacent face ordinal N has no role lineage`).
+  it('C3-D2: extrudes along the profile sketch plane normal, not sketch-local +Z', () => {
+    const sketch = simpleObj('Sketcher::SketchObject', 'Sketch199', {});
+    sketch.properties.set('Placement', {
+      name: 'Placement', type: 'App::PropertyPlacement', tagName: 'Property',
+      children: [{
+        name: 'PropertyPlacement', type: '', tagName: 'PropertyPlacement',
+        children: [], valueXml: '', valueText: '',
+        attributes: { Px: '0', Py: '0', Pz: '250', Q0: '0', Q1: '0.707106781187', Q2: '0', Q3: '0.707106781187' },
+      }],
+      valueXml: '', valueText: '', attributes: {},
+    } as never);
+    const pad = simpleObj('PartDesign::Pad', 'Pad', { Profile: { value: 'Sketch199' }, Length: { value: '10' } });
+    const doc: FcstdDocument = { objects: [sketch, pad], typeIndex: new Map(), meta: new Map() };
+    const placements = new Map([['Sketch199', { p: [0, 0, 250] as [number, number, number], q: [0, 0.707106781187, 0, 0.707106781187] as [number, number, number, number] }]]);
+    const inputs = new Map([['Sketch199', { geoms: [{ kind: 'line' as const, x1: 0, y1: 0, x2: 40, y2: 0 }], constraints: [] }]]);
+    const r = generateModel(doc, new Map(), NO_CONTOURS, 't', placements, undefined, undefined, undefined, undefined, inputs);
+    const { n } = planeBasis({ p: [0, 0, 250], q: [0, 0.707106781187, 0, 0.707106781187] });
+    // the direction is the plane normal — NOT the local +Z vector
+    expect(r.code).toContain(`normal: [${n.join(',')}]`);
+    expect(r.code).toContain('length: 10');
+    expect(r.code).not.toMatch(/cad\.extrude\(Sketch199, \[/);
+    // and it is a real rotation, i.e. the normal is not +Z
+    expect(n).not.toEqual([0, 0, 1]);
+  });
+
+  // C3-D2 counterpart: `Reversed` travels into the DIRECTION, not into a
+  // negative length (cad.extrude requires length > 0).
+  it('C3-D2: a reversed pad flips the extrude normal instead of negating the length', () => {
+    const sketch = simpleObj('Sketcher::SketchObject', 'Sketch199', {});
+    const pad = simpleObj('PartDesign::Pad', 'Pad', {
+      Profile: { value: 'Sketch199' }, Length: { value: '10' }, Reversed: { value: 'true' },
+    });
+    const doc: FcstdDocument = { objects: [sketch, pad], typeIndex: new Map(), meta: new Map() };
+    const q: [number, number, number, number] = [0, 0.707106781187, 0, 0.707106781187];
+    const placements = new Map([['Sketch199', { p: [0, 0, 250] as [number, number, number], q }]]);
+    const inputs = new Map([['Sketch199', { geoms: [{ kind: 'line' as const, x1: 0, y1: 0, x2: 40, y2: 0 }], constraints: [] }]]);
+    const r = generateModel(doc, new Map(), NO_CONTOURS, 't', placements, undefined, undefined, undefined, undefined, inputs);
+    const { n } = planeBasis({ p: [0, 0, 250], q });
+    expect(r.code).toContain(`normal: [${n.map((x) => -x).join(',')}]`);
+    expect(r.code).toContain('length: 10');
+  });
+
+  // C3-D2 guard: the rotation is licensed by the PARAMETRIC plane frame only.
+  // The A5 `cad.profile` fallback builds in local coordinates and is re-oriented
+  // by M8.3 afterwards — its extrude must stay on local +Z.
+  it('C3-D2: keeps local +Z when the profile sketch had no parametric plane frame', () => {
+    const sketch = simpleObj('Sketcher::SketchObject', 'Sketch199', {});
+    const pad = simpleObj('PartDesign::Pad', 'Pad', { Profile: { value: 'Sketch199' }, Length: { value: '10' } });
+    const doc: FcstdDocument = { objects: [sketch, pad], typeIndex: new Map(), meta: new Map() };
+    const placements = new Map([['Sketch199', { p: [0, 0, 250] as [number, number, number], q: [0, 0, 0, 1] as [number, number, number, number] }]]);
+    const r = generateModel(
+      doc,
+      new Map([['Sketch199', { level: 'L0' as const, loopCount: 1 }]]),
+      new Map([['Sketch199', square()]]),
+      't',
+      placements,
+    );
+    expect(r.code).toMatch(/cad\.extrude\(Sketch199, \[0,0,10\]\)/);
   });
 
   // A5 (2026-09-28 plan): the cad.profile emission is the FALLBACK branch
