@@ -51,6 +51,7 @@ interface Node {
   params?: Node[];
   id?: Node;
   key?: Node;
+  property?: Node;
   param?: Node;
   computed?: boolean;
   [k: string]: unknown;
