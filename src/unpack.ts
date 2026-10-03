@@ -115,7 +115,7 @@ export function brpHasEmbeddedLocation(data: Uint8Array): boolean {
 }
 
 /**
- * Extract the translation embedded in the .brp's FIRST location block, or
+ * Extract the transform embedded in the .brp's FIRST location block, or
  * null when the block is absent/identity.
  *
  * GOTCHA (2026-09-26, Beds.FCStd): the embedded location is NOT always the
@@ -125,10 +125,20 @@ export function brpHasEmbeddedLocation(data: Uint8Array): boolean {
  * coincide. The skip-place predicate must therefore compare embedded vs
  * Document translation, not merely "has any embedding".
  *
+ * GOTCHA (2026-10-03, FCBL_chair_upholstered): the old version returned the
+ * translation ONLY and treated a zero translation as identity — a pure
+ * ROTATION embedding (90°X, tx=ty=tz=0) was reported as `null`, the
+ * pre-placed skip never fired, and the child asset got `cad.place`-ed a
+ * second time (the extrude direction then lay IN the profile plane →
+ * degenerate zero-volume sheet → downstream kernel fuse failure). The
+ * return is now the full transform (rotation rows + translation); identity
+ * means BOTH rotation and translation are identity.
+ *
  * @param data - the raw `.brp` member bytes.
- * @returns [tx, ty, tz] of the embedded location, or null when identity/absent.
+ * @returns the embedded 3×4 transform (3 matrix rows of 'r00 r01 r02 tx'),
+ *   or null when identity/absent.
  */
-export function brpEmbeddedLocation(data: Uint8Array): [number, number, number] | null {
+export function brpEmbeddedLocation(data: Uint8Array): [[number, number, number, number], [number, number, number, number], [number, number, number, number]] | null {
   // .brp members are ASCII (CASCADE Topology V1 text format)
   const head = new TextDecoder('utf-8').decode(data.slice(0, 4096));
   const li = head.indexOf('Locations');
@@ -141,23 +151,22 @@ export function brpEmbeddedLocation(data: Uint8Array): [number, number, number] 
   if (!Number.isFinite(count) || count < 1) return null;
   // GOTCHA: no rowcount line — after the block count, 3 matrix rows follow
   // directly ('r00 r01 r02 tx' per line), then the next section (Curve2ds…).
-  let tx = 0, ty = 0, tz = 0;
+  const rows: [[number, number, number, number], [number, number, number, number], [number, number, number, number]] = [
+    [1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0],
+  ];
   let i = 2;
   for (let r = 0; r < 3 && i < lines.length; r++, i++) {
     const v = lines[i]!.trim().split(/\s+/).map(Number);
     if (v.length < 4) return null;
-    const [r0, r1, r2, t] = v as [number, number, number, number];
-    const expect = r === 0 ? [1, 0, 0] : r === 1 ? [0, 1, 0] : [0, 0, 1];
-    if (Math.abs(r0 - expect[0]!) > 1e-9 || Math.abs(r1 - expect[1]!) > 1e-9 ||
-        Math.abs(r2 - expect[2]!) > 1e-9) {
-      // rotation embedded — non-identity by definition
-      if (r === 0) tx = t; else if (r === 1) ty = t; else tz = t;
-      // rotation rows carry the translation in the 4th column per row; keep
-      // scanning — the composite translation is spread across rows
-    } else if (r === 0) tx = t;
-    else if (r === 1) ty = t;
-    else tz = t;
+    rows[r] = [v[0]!, v[1]!, v[2]!, v[3]!];
   }
-  if (Math.abs(tx) < 1e-9 && Math.abs(ty) < 1e-9 && Math.abs(tz) < 1e-9) return null;
-  return [tx, ty, tz];
+  // identity ⇒ null (caller falls back to the normal place path)
+  const expect: number[][] = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+  for (let r = 0; r < 3; r++) {
+    for (let c = 0; c < 3; c++) {
+      if (Math.abs(rows[r]![c]! - expect[r]![c]!) > 1e-9) return rows;
+    }
+  }
+  if (Math.abs(rows[0]![3]!) > 1e-9 || Math.abs(rows[1]![3]!) > 1e-9 || Math.abs(rows[2]![3]!) > 1e-9) return rows;
+  return null;
 }

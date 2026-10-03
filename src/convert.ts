@@ -34,6 +34,7 @@ import { fcstdObjectLabel } from './expressions.js';
 import { setParamContext } from './feature-translate.js';
 import { jsExpr } from './feature-translate.js';
 import type { Placement } from './placement.js';
+import { quatToMatrix } from './placement.js';
 import { effectivePlacement } from './attachment.js';
 import { buildFaiZip } from './build-fai-zip.js';
 import { isOk } from '@faicad/faijs/api/result';
@@ -354,6 +355,10 @@ export async function convertFcstdFile(input: string, opts?: ConvertOptions): Pr
     // → already placed once). When they differ (Section002: embedded
     // (1500,0,600) vs doc (0,600,1500)) the two compose — the place must still
     // be emitted, targeting the residual (doc − embedded) transform.
+    // 2026-10-03 (FCBL_chair_upholstered): equality now covers ROTATION too —
+    // the old check compared only the translation, so a pure-rotation embed
+    // (90°X, zero translation) read as "no embedding" and the child asset was
+    // `cad.place`-ed a second time (degenerate sheet → kernel fuse failure).
     const prePlacedAssets = new Set<string>();
     for (const obj of doc.value.objects) {
       if (!shapeCarriers.has(obj.name)) continue;
@@ -365,11 +370,18 @@ export async function convertFcstdFile(input: string, opts?: ConvertOptions): Pr
       const embedded = brpEmbeddedLocation(member);
       if (!embedded) continue; // identity/absent → normal place path
       const pl = placements?.get(obj.name);
-      if (pl && Math.abs(pl.p[0]! - embedded[0]!) < 1e-6 &&
-          Math.abs(pl.p[1]! - embedded[1]!) < 1e-6 &&
-          Math.abs(pl.p[2]! - embedded[2]!) < 1e-6) {
-        prePlacedAssets.add(obj.name);
+      if (!pl) continue;
+      // embedded rows are [r00 r01 r02 tx]; the placement quaternion gives the
+      // same rotation matrix (row-major, 3×3) plus translation p.
+      const m = quatToMatrix(pl.q);
+      let equal = true;
+      for (let r = 0; r < 3 && equal; r++) {
+        for (let c = 0; c < 3; c++) {
+          if (Math.abs(embedded[r]![c]! - m[r * 3 + c]!) > 1e-6) { equal = false; break; }
+        }
+        if (Math.abs(embedded[r]![3]! - pl.p[r]!) > 1e-6) equal = false;
       }
+      if (equal) prePlacedAssets.add(obj.name);
     }
     gen = generateModel(
       doc.value, sketchVerdict, sketchContours, baseName, placements, shapeCarriers,
