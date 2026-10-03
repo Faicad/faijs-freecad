@@ -109,10 +109,10 @@ describe('fcstd container (M2)', () => {
     expect(box.artifacts).toContain('assets/Box.brp');
   });
 
-  // D-A: the FCStd port output is BREP-chain-only; the manifest must declare
-  // it so executors know `--mode brep` is required (never rely on `auto`).
-  // Unified format v3: format === 3, models[] with main entry.
-  it('manifest declares format 3, models[] and requiresBrep: true', async () => {
+  // D-A: the FCStd port output is BREP-chain-only; manifest no longer carries a
+  // requiresBrep field (removed 2026-10-03): BREP is always the default-required
+  // execution chain. Unified format v3: format === 3, models[] with main entry.
+  it('manifest declares format 3, models[] and omits requiresBrep', async () => {
     const source = unpackFcstd(makeFakeFcstd());
     if (!isOk(source)) return;
     const built = await buildFaiZip(source.value, 'fake.FCStd', DEFAULT_MODELS);
@@ -123,7 +123,7 @@ describe('fcstd container (M2)', () => {
     expect(manifest.units).toBe('mm');
     expect(manifest.models).toEqual(DEFAULT_MODELS);
     expect(manifest.models[0].entry).toBe('model/main.fai.js');
-    expect(manifest.requiresBrep).toBe(true);
+    expect(manifest.requiresBrep).toBeUndefined(); // field removed; BREP is default-required
     expect(manifest.entry).toBeUndefined(); // no legacy single-entry field
   });
 

@@ -62,7 +62,7 @@ describe.skipIf(!sampleAvailable)('unified .fai.zip openContainer acceptance (fo
     expect(manifest.format).toBe(3);
     expect(manifest.units).toBe('mm');
     expect(manifest.models.length).toBeGreaterThanOrEqual(1);
-    expect(manifest.requiresBrep).toBe(true);
+    expect(manifest.requiresBrep).toBeUndefined(); // field removed — BREP is default-required
     expect(activeModel).toBeDefined();
 
     // models[] covers main + every Body script member (each executes standalone)

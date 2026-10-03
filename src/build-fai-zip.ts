@@ -121,7 +121,6 @@ export async function buildFaiZip(
         programVersion: readProgramVersion(doc),
         schemaVersion: Number(doc.meta.get('SchemaVersion')?.valueText ?? 4),
       },
-      requiresBrep: true,
     },
   });
   out['manifest.json'] = encodeMemberText(JSON.stringify(manifest, null, 2));
