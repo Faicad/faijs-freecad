@@ -1893,6 +1893,22 @@ describe('P2-3 sweep / loft / helix (Part-workbench curve/loft features)', () =>
     }
   });
 
+  it('bakes Part::Sweep with transformed/round transition — occt-wasm sweepPipeShell does not expose the transition param (H组)', () => {
+    // 2026-10-03: translating these used to emit transitionMode params that
+    // only failed at RUN time (SWEEP_TRANSITION_UNSUPPORTED, 26 corpus
+    // files). Honest bake at translation time instead.
+    for (const tr of ['1', 'Transformed', '2', 'Round']) {
+      const sweep = obj('Part::Sweep', 'Sweep', [
+        linkProp('Profile', 'Circle'),
+        linkProp('Spine', 'Line'),
+        prop('Transition', { name: 'String', attrs: { value: tr } }),
+      ]);
+      const v = translateObject(sweep, () => undefined, [sweep]);
+      expect(v.kind).toBe('baked');
+      expect(String((v as { reason?: string }).reason)).toMatch(/^sweep-transition-unsupported:(transformed|round)$/);
+    }
+  });
+
   it('bakes Part::Sweep with Auxiliary mode (needs a second spine — unsupported)', () => {
     const sweep = obj('Part::Sweep', 'Sweep', [
       linkProp('Profile', 'Circle'),

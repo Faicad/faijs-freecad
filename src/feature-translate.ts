@@ -1813,6 +1813,17 @@ export function translateObject(
       if (modeRaw === 'Auxiliary' || modeRaw === '2') {
         return { kind: 'baked', reason: 'sweep-auxiliary-unsupported' };
       }
+      const frenet = modeRaw === undefined || modeRaw === 'Frenet' || modeRaw === '0' || propBool(obj, 'Frenet');
+      const transition = normalizeSweepTransition(propStr(obj, 'Transition'));
+      // H 组（2026-10-03，Duct/fan-40x40 语料）：occt-wasm 的 sweepPipeShell
+      // (profile, spine, frenet, smooth) 不暴露 transition 参数——实现
+      // 'transformed'/'round' 需改外部 wasm 包，本仓不可行。早先翻译成
+      // transitionMode 参数只会把失败推迟到运行期（SWEEP_TRANSITION_UNSUPPORTED
+      // run-fail 26 个）。这里诚实记 baked（gap 上报），只有默认 'right' 发射。
+      // 与 Auxiliary 同理：unsupported option 是对象自身属性，在依赖解析前判。
+      if (transition === 'transformed' || transition === 'round') {
+        return { kind: 'baked', reason: `sweep-transition-unsupported:${transition}` };
+      }
       const sweepProfile = propLink(obj, 'Profile') ?? propLinkList(obj, 'Sections')[0];
       const sweepSpineSub = propLinkSub(obj, 'Spine');
       const sweepSpine = sweepSpineSub?.obj;
@@ -1824,8 +1835,6 @@ export function translateObject(
       if (!spineVar) {
         return { kind: 'baked', reason: sweepSpine ? `sweep-spine-baked-upstream:${sweepSpine}` : 'sweep-missing-spine' };
       }
-      const frenet = modeRaw === undefined || modeRaw === 'Frenet' || modeRaw === '0' || propBool(obj, 'Frenet');
-      const transition = normalizeSweepTransition(propStr(obj, 'Transition'));
       const opts: Record<string, unknown> = {};
       if (frenet) opts.frenet = true;
       if (transition) opts.transitionMode = transition;
