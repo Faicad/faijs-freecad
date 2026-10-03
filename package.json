@@ -1,6 +1,6 @@
 {
   "name": "@faicad/faijs-freecad",
-  "version": "0.28.0",
+  "version": "0.28.1",
   "description": "FCStd reader and .fai.js conversion pipeline for faijs - unpack, sketch parse/solve, feature translate, batch CLI",
   "keywords": [
     "faijs",
