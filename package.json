@@ -1,6 +1,6 @@
 {
   "name": "@faicad/faijs-freecad",
-  "version": "0.28.1",
+  "version": "0.29.1",
   "description": "FCStd reader and .fai.js conversion pipeline for faijs - unpack, sketch parse/solve, feature translate, batch CLI",
   "keywords": [
     "faijs",
@@ -41,12 +41,12 @@
     "LICENSE"
   ],
   "dependencies": {
-    "@faicad/faijs-draw": "^0.28.0",
-    "@faicad/faijs-sketch": "^0.28.0",
+    "@faicad/faijs-draw": "^0.29.0",
+    "@faicad/faijs-sketch": "^0.29.0",
     "@xmldom/xmldom": "^0.9.8"
   },
   "peerDependencies": {
-    "@faicad/faijs": "^0.28.0",
+    "@faicad/faijs": "^0.29.0",
     "occt-wasm": "^3.8.4"
   },
   "devDependencies": {
