@@ -317,6 +317,11 @@ export function generateModel(
     }
   }
   const chainVar = new Map<string, string>(); // body name → accumulated var
+  // F 组（2026-10-03）：whose chain BASE is an import_brep asset that is only
+  // consumed as the first Pad's profile — unioning the (non-solid) base face
+  // onto its own extrusion fails in OCCT, so the extrusion becomes the new
+  // chain head directly.
+  const chainBaseAsset = new Set<string>();
   // P1.3 (2026-09-28, Winch-Model1-Cable-Guide): Body-less PartDesign files
   // chain their features with an EMPTY BaseFeature link (`<Link value=""/>` —
   // FreeCAD 0.20+ serializes "implied by feature order" this way). propLink
@@ -823,6 +828,11 @@ export function generateModel(
         const featureVar = variables.get(name) ?? verdict.calls.at(-1)!.out;
         if (!prev) {
           chainVar.set(body, featureVar); // base feature
+          // F 组（2026-10-03，FAULHABER/Beam-coupling 语料）：记住链头是否是
+          // import_brep 资产。FreeCAD 的 ShapeBinder/冻结面常只作为后续 Pad 的
+          // profile，它本身是 face（非 solid）——union(face, 该面的挤出体) 在
+          // OCCT 布尔下必然失败（fuse "operation failed"，内核直测实证）。
+          if (verdict.calls[0]?.op === 'cad.import_brep') chainBaseAsset.add(body);
         } else if (isSubtractive && verdict.calls.at(-1)!.op === 'cad.subtract' && verdict.calls.at(-1)!.inputs.includes(prev)) {
           // Pocket already subtracted from the chain var itself (BaseFeature
           // resolved to the chain) — its output IS the new chain head; no
@@ -832,6 +842,13 @@ export function generateModel(
           const nv = emitVar(`${body}__chain`);
           calls.push({ out: nv, op: 'cad.subtract', source: name, inputs: [prev, featureVar], params: {} });
           chainVar.set(body, nv);
+        } else if (chainBaseAsset.has(body) && verdict.calls.some((c) => c.inputs?.includes(prev))) {
+          // F 组（2026-10-03）：the chain base is a non-solid import_brep asset
+          // that THIS feature consumed as its profile (e.g. Pad009 =
+          // extrude(ShapeBinder003, …)). union(face, its own extrusion) fails
+          // in OCCT; the extrusion already contains the base material — it
+          // IS the new chain head.
+          chainVar.set(body, featureVar);
         } else {
           const nv = emitVar(`${body}__chain`);
           calls.push({ out: nv, op: 'cad.union', source: name, inputs: [prev, featureVar], params: {} });
