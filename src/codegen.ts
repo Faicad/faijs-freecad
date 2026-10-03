@@ -1254,6 +1254,17 @@ function lowerBody(
   return lines.join('\n') + '\n';
 }
 
+/**
+ * Ops whose product is a 2D PROFILE (a contour face), not a solid.
+ *
+ * I-group (2026-10-03): these must never reach the terminal
+ * `cad.compound` — see the note in {@link lower}. `cad.sketch` is the
+ * parametric path (A3, re-solved at run time) and `cad.profile` the A5
+ * fallback; both carry their contour only, and both are referenced by the
+ * extrude/revolve ops through `params`, not `inputs`.
+ */
+const PROFILE_OPS = new Set(['cad.sketch', 'cad.profile']);
+
 /** M5.2 — lower the call plan to .fai.js source. faijs syntax: top-level
  * statement flow with `let <Name> = cad.x(...)` (Name = source object name);
  * no wrapper function. */
@@ -1275,8 +1286,26 @@ function lower(
   }
   // final shape: union of root calls that nobody consumes; faijs scripts
   // end with the output-producing statement (no return, per fixtures).
+  //
+  // I-group (2026-10-03, cable-chain-link-25_5x16x12_5mm): "unconsumed" is
+  // NOT the same as "a solid". `cad.sketch` / `cad.profile` emit a 2D contour
+  // face and are declared with `inputs: []` (codegen.ts:368), so a profile that
+  // is only referenced as an extrude's `sketch` PARAMETER — not as a positional
+  // input — looks unconsumed and was swept into the root `cad.compound`.
+  // That file shipped 5 sketches among its 16 members: solids 12 vs truth 11,
+  // volume 21506 vs 58157 (37%), com off by 1.90. A profile carried into the
+  // terminal compound is at best dead weight and at worst an extra solid, so
+  // both profile carriers are excluded here.
+  //
+  // GOTCHA: do NOT instead mark the profile as consumed by the extrude. The
+  // extrude carries it in `params.sketch` (a bare variable name rendered into
+  // the options object), not in `inputs` — see the members-are-bare-names note
+  // above. Fixing it at the roots filter keeps `lower()`'s single source of
+  // truth for "what ends up in the product".
   const consumed = new Set(calls.flatMap((c) => c.inputs));
-  const roots = calls.filter((c) => !consumed.has(c.out)).map((c) => c.out);
+  const roots = calls
+    .filter((c) => !consumed.has(c.out) && !PROFILE_OPS.has(c.op))
+    .map((c) => c.out);
   if (roots.length > 1) {
     lines.push(`let assembly = cad.compound({ members: [${roots.join(', ')}] });`);
   } else if (roots.length === 0) {

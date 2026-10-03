@@ -155,7 +155,12 @@ for (const rel of targets) {
     }
     const model = activeModel ?? ctrManifest.models[0];
     const entry = join(scratch, model.entry);
-    row.checkErrors = cliCheck(entry).errors.map((e) => `${e.stage}: ${e.message}`);
+    // Pass the SAME namespace cliRun gets. Without this the unknown-op guard
+    // reads only the static symbol table and reports `cad.sketch` /
+    // `cad.draw` as missing for every product, so a sweep that trusts
+    // checkErrors sees the whole corpus as broken.
+    row.checkErrors = cliCheck(entry, { assetsDir, libs: { cad: CAD_NS } }).errors
+      .map((e) => `${e.stage}: ${e.message}`);
     const productOut = join(scratch, 'product');
     mkdirSync(productOut, { recursive: true });
     try {

@@ -964,7 +964,7 @@ describe('M5 codegen', () => {
     // Body: Sketch declared, consumed by nothing at home (a loose sketch —
     // its chain head aliases it), so it IS a live shape in Body. Body001 may
     // import it.
-    const mkLooseBody = (name: string, objs: string[]): FcstdDocument['objects'][number] => {
+    const mkLooseBody = (name: string, _objs: string[]): FcstdDocument['objects'][number] => {
       const b = simpleObj('PartDesign::Body', name, {});
       return b;
     };
@@ -1492,5 +1492,72 @@ describe('A1 Draft emission — closed contours are faces, open contours are wir
     for (const c of r.calls.filter((c) => c.op === 'cad.sketchOnPlane')) {
       expect(c.params!.plane).toEqual({ origin: [0, 0, 5], normal: [0, 0, 1], xAxis: [1, 0, 0] });
     }
+  });
+
+  // I-group (2026-10-03, cable-chain-link-25_5x16x12_5mm): a profile op is
+  // declared with `inputs: []` and reaches its consumer through `params`, so
+  // `lower()`'s "nobody consumes it" test swept it into the terminal
+  // `cad.compound`. Real file shipped 5 sketches among 16 members; solids 12 vs
+  // truth 11, volume 21506 vs 58157 (37%), com off 1.90.
+  //
+  // The trigger is a LOOSE profile: a sketch whose consuming feature is NOT
+  // translated (in the real file the pockets fall back to `cad.import_brep`
+  // of a frozen shape, leaving the sketch referenced by nothing). A fixture
+  // whose sketch IS consumed proves nothing — verified by mutation: reverting
+  // the filter kept that variant green.
+  it('excludes a LOOSE cad.sketch from the terminal compound', () => {
+    const doc: FcstdDocument = {
+      objects: [
+        // The sketch's only would-be consumer is an unsupported feature type,
+        // so it is translated but never consumed.
+        simpleObj('Sketcher::SketchObject', 'Sketch', {}),
+        simpleObj('Part::Feature', 'Blob', {}),
+        // Two solids so `roots.length > 1` and a compound is emitted at all.
+        simpleObj('Part::Box', 'Box', {}),
+        simpleObj('Part::Cylinder', 'Cyl', {}),
+      ],
+      typeIndex: new Map(),
+      meta: new Map(),
+    };
+    const geoms = [
+      { kind: 'line' as const, x1: 0, y1: 0, x2: 10, y2: 0 },
+      { kind: 'line' as const, x1: 10, y1: 0, x2: 10, y2: 10 },
+      { kind: 'line' as const, x1: 10, y1: 10, x2: 0, y2: 10 },
+      { kind: 'line' as const, x1: 0, y1: 10, x2: 0, y2: 0 },
+    ];
+    const r = generateModel(
+      doc, new Map(), NO_CONTOURS, 't',
+      undefined, undefined, undefined, undefined, undefined,
+      new Map([['Sketch', { geoms, constraints: [] }]]),
+    );
+    expect(r.code, 'fixture must actually emit a profile').toContain('cad.sketch');
+    const compound = r.code.match(/cad\.compound\(\{ members: \[([^\]]*)\]/);
+    expect(compound, `no terminal compound in:\n${r.code}`).not.toBeNull();
+    const members = compound![1]!.split(',').map((s) => s.trim());
+    expect(members).not.toContain('Sketch');
+    // the solids are still all there — the filter removes profiles ONLY
+    expect(members).toEqual(expect.arrayContaining(['Box', 'Cyl']));
+  });
+
+  it('still emits a single-member compound when a profile is the ONLY root (no phantom member)', () => {
+    // A lone profile must not leave `roots.length === 0` behind: with the
+    // profile filtered out, no compound is emitted at all (the profile has no
+    // solid of its own), rather than a `members: [Sketch]` compound.
+    const doc: FcstdDocument = {
+      objects: [simpleObj('Sketcher::SketchObject', 'Sketch', {})],
+      typeIndex: new Map(),
+      meta: new Map(),
+    };
+    const geoms = [
+      { kind: 'line' as const, x1: 0, y1: 0, x2: 10, y2: 0 },
+      { kind: 'line' as const, x1: 10, y1: 0, x2: 10, y2: 10 },
+    ];
+    const r = generateModel(
+      doc, new Map(), NO_CONTOURS, 't',
+      undefined, undefined, undefined, undefined, undefined,
+      new Map([['Sketch', { geoms, constraints: [] }]]),
+    );
+    expect(r.code).toContain('cad.sketch');
+    expect(r.code).not.toContain('cad.compound');
   });
 });
