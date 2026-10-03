@@ -603,6 +603,25 @@ describe('M4.6 Pad/Pocket', () => {
     }
   });
 
+  it('GOTCHA: negative LengthFwd (VarSet expression) folds the sign into the direction — NOT extrusion-zero-length (K, Duct Extrude002)', () => {
+    // Wrong (old) reading: `fwdLen > 0` gate silently dropped negative
+    // lengths → `extrusion-zero-length` gap. FreeCAD semantics: a negative
+    // LengthFwd extrudes |len| along −Dir (Duct_curved Extrude002:
+    // LengthFwd=-1 via `-VarSet.Flange_Thickness`, Reversed=true).
+    const ext = obj('Part::Extrusion', 'Ext', [
+      prop('Base', { name: 'Link', attrs: { value: 'Sketch' } }),
+      prop('LengthFwd', { name: 'Float', attrs: { value: '-1' } }),
+      prop('LengthRev', { name: 'Float', attrs: { value: '0' } }),
+      prop('Dir', { name: 'Vector', attrs: { value: '0 0 1' } }),
+    ]);
+    const v = translateObject(ext, (dep) => (dep === 'Sketch' ? 'sketch0' : undefined));
+    expect(v.kind).toBe('translated');
+    if (v.kind === 'translated') {
+      // −1 along +Dir ⇒ extrude (0,0,-1)*1 — the sign became direction
+      expect(v.calls[0]!.literals).toEqual([[0, 0, -1]]);
+    }
+  });
+
   it('GOTCHA: old-format Part::Extrusion has no Length — |Dir| IS the extrusion vector', () => {
     // Wrong (legacy) reading: Length missing → len 0 → zero vector.
     // Correct: Dir itself is the extrude vector (Flat Bar truth: vol
@@ -1234,6 +1253,39 @@ describe('M4.7 patterns (LinearPattern / PolarPattern)', () => {
     ]);
     const v = translateObject(pp, (dep) => (dep === 'Pad' ? 'Pad' : undefined));
     expect(v).toMatchObject({ kind: 'baked', reason: 'polar-pattern-edge-axis-unsupported' });
+  });
+
+  // GOTCHA 留档（2026-10-03, K 组 Metal_Box_170x130x80 / FCBL_table_parametric）：
+  // PartDesign::Mirrored 语料主流形态是 Originals count=0 + BaseFeature 空
+  // （语义 = 镜像 Body 链当前实体）+ MirrorPlane → 某 sketch 的 V_Axis。
+  // 旧代码无此分支，0 字节 .brp 缓存把它拉成 shape-asset-broken gap（27 文件）。
+  it('translates Mirrored with empty Originals over a sketch V_Axis into cad.mirrorJoin on the body chain base', () => {
+    const mir = obj('PartDesign::Mirrored', 'Mirrored', [
+      prop('BaseFeature', { name: 'Link', attrs: { value: '' } }),
+      linkSubProp('MirrorPlane', 'Sketch002', ['V_Axis']),
+      prop('Originals', { name: 'LinkList', attrs: { count: '0' } }, []),
+    ]);
+    // 镜像面引用的 sketch 必须在 docObjects 里可解析（真实文件中它总存在）
+    const sk = obj('Sketcher::SketchObject', 'Sketch002', []);
+    const v = translateObject(mir, () => undefined, [sk, mir]);
+    expect(v.kind).toBe('translated');
+    if (v.kind === 'translated') {
+      expect(v.calls[0]!.op).toBe('cad.mirrorJoin');
+      // Originals 空 ⇒ 镜像目标是 Body 链基（BODY_CHAIN_BASE 标记）
+      expect(v.calls[0]!.inputs).toEqual(['::body-chain-base::']);
+      const params = v.calls[0]!.params as { normal: number[]; at: number[] };
+      // V_Axis 局部 (0,1,0) 经 sketch placement 旋转为世界法向；at = sketch 原点
+      expect(params.normal).toHaveLength(3);
+      expect(Math.hypot(...params.normal)).toBeCloseTo(1, 6);
+    }
+  });
+
+  it('bakes Mirrored with no MirrorPlane', () => {
+    const mir = obj('PartDesign::Mirrored', 'Mirrored', [
+      prop('Originals', { name: 'LinkList', attrs: { count: '0' } }, []),
+    ]);
+    const v = translateObject(mir, () => undefined, [mir]);
+    expect(v).toMatchObject({ kind: 'baked', reason: 'mirrored-missing-plane' });
   });
 });
 

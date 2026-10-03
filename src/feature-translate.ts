@@ -111,6 +111,9 @@ const WHITELIST = new Set([
   'PartDesign::Groove',
   'PartDesign::LinearPattern',
   'PartDesign::PolarPattern',
+  // K 组（2026-10-03, Metal_Box_170x130x80）：PartDesign::Mirrored — 镜像
+  // Body 链实体跨越 sketch 轴/origin 平面并 fuse（cad.mirrorJoin）。
+  'PartDesign::Mirrored',
   'PartDesign::Fillet',
   'PartDesign::Chamfer',
   // M13.1 (probed on real corpus — fcstd-port/tools/probe-m13-types.ts):
@@ -1381,19 +1384,35 @@ export function translateObject(
       const unitDir = normalize3(effDir);
       const calls: CadCall[] = [];
       const emitExtrude = (outName: string, fwdLen: number, revLen: number) => {
+        // K 组（2026-10-03, Duct_curved_circular Extrude002）：FreeCAD 允许
+        // LengthFwd/LengthRev 为负（常由 VarSet 表达式驱动，如
+        // `-VarSet.Flange_Thickness`）——负值语义是「沿反方向挤 |len|」，
+        // 不是零长度。旧代码只在 len>0 时发射，负长度被静默吞掉 →
+        // extrusion-zero-length gap。符号折进方向：len<0 → -unitDir*|len|。
         if (fwdLen > 0) {
           calls.push({
-            out: revLen > 0 ? `${outName}_fwd` : outName,
+            out: revLen !== 0 ? `${outName}_fwd` : outName,
             op: 'cad.extrude', source: obj.name, inputs: [baseVar],
             literals: [[unitDir[0] * fwdLen, unitDir[1] * fwdLen, unitDir[2] * fwdLen]], params: {},
           });
+        } else if (fwdLen < 0) {
+          calls.push({
+            out: revLen !== 0 ? `${outName}_fwd` : outName,
+            op: 'cad.extrude', source: obj.name, inputs: [baseVar],
+            literals: [[(-unitDir[0] * -fwdLen) || 0, (-unitDir[1] * -fwdLen) || 0, (-unitDir[2] * -fwdLen) || 0]], params: {},
+          });
         }
         if (revLen > 0) {
-          // `|| 0` normalizes -0 to +0 (JSON/对拍 noise otherwise).
           calls.push({
-            out: fwdLen > 0 ? `${outName}_rev` : outName,
+            out: fwdLen !== 0 ? `${outName}_rev` : outName,
             op: 'cad.extrude', source: obj.name, inputs: [baseVar],
             literals: [[(-unitDir[0] * revLen) || 0, (-unitDir[1] * revLen) || 0, (-unitDir[2] * revLen) || 0]], params: {},
+          });
+        } else if (revLen < 0) {
+          calls.push({
+            out: fwdLen !== 0 ? `${outName}_rev` : outName,
+            op: 'cad.extrude', source: obj.name, inputs: [baseVar],
+            literals: [[(unitDir[0] * -revLen) || 0, (unitDir[1] * -revLen) || 0, (unitDir[2] * -revLen) || 0]], params: {},
           });
         }
       };
@@ -1601,6 +1620,54 @@ export function translateObject(
         });
       }
       return { kind: 'translated', calls };
+    }
+    case 'PartDesign::Mirrored': {
+      // K 组（2026-10-03, Metal_Box_170x130x80 / FCBL_table_parametric）：
+      // PartDesign::Mirrored 镜像 Originals（或 BaseFeature 链上实体）跨越
+      // MirrorPlane 并与原体 fuse。语料主流形态：Originals count=0 +
+      // BaseFeature 空（语义 = 镜像 Body 链当前实体）+ MirrorPlane →
+      // 某 sketch 的 V_Axis/H_Axis。cad.mirrorJoin = 原体 + 镜像体 fuse，
+      // 正是 PartDesign 镜像的语义。
+      const originals = propLinkList(obj, 'Originals');
+      const mirrorBase = propLink(obj, 'BaseFeature') ?? originals[0];
+      // Originals 空 ⇒ 镜像对象是 Body 链基（codegen 折叠为链头）。
+      const targetVar = mirrorBase ? inputVar(mirrorBase) : (originals.length === 0 ? BODY_CHAIN_BASE : undefined);
+      if (!targetVar) return { kind: 'baked', reason: 'mirrored-missing-originals' };
+      // 镜像面：LinkSub → sketch 轴（V_Axis/H_Axis/N_Axis 相对 sketch placement；
+      // 原点平面 XY_Plane/XZ_Plane/YZ_Plane 相对 Body origin）。
+      const planeRef = propLinkSub(obj, 'MirrorPlane');
+      if (!planeRef) return { kind: 'baked', reason: 'mirrored-missing-plane' };
+      const planeObj = docObjects?.find((o) => o.name === planeRef.obj);
+      let normal: [number, number, number] | undefined;
+      let at: [number, number, number] = [0, 0, 0];
+      if (planeObj && /Sketch/.test(planeObj.type)) {
+        const sub = planeRef.subs[0] ?? '';
+        const bodyAxis = resolveAxisRef(obj, 'MirrorPlane');
+        void bodyAxis;
+        // sketch 轴向量在 sketch 局部系：H_Axis=(1,0,0), V_Axis=(0,1,0),
+        // N_Axis=(0,0,1)（轴名→向量见 parseReferenceAxis 的映射惯例）。
+        const local = /H_Axis/.test(sub) ? [1, 0, 0] : /V_Axis/.test(sub) ? [0, 1, 0] : [0, 0, 1];
+        const skM = quatToMatrix(placementOf(planeObj).q);
+        normal = [
+          skM[0]! * local[0]! + skM[1]! * local[1]! + skM[2]! * local[2]!,
+          skM[3]! * local[0]! + skM[4]! * local[1]! + skM[5]! * local[2]!,
+          skM[6]! * local[0]! + skM[7]! * local[1]! + skM[8]! * local[2]!,
+        ];
+        at = placementPos(planeObj);
+      } else if (planeObj && /Plane/.test(planeObj.type)) {
+        // origin 平面：法向 = 平面 placement 的 Z 轴
+        const m = quatToMatrix(placementOf(planeObj).q);
+        normal = [m[2]!, m[5]!, m[8]!];
+        at = placementPos(planeObj);
+      }
+      if (!normal) return { kind: 'baked', reason: `mirrored-plane-ref-unsupported:${planeRef.obj}` };
+      return {
+        kind: 'translated',
+        calls: [{
+          out, op: 'cad.mirrorJoin', source: obj.name, inputs: [targetVar],
+          params: { normal, at },
+        }],
+      };
     }
     case 'PartDesign::PolarPattern': {
       const sourcePolar = propLink(obj, 'Source') ?? propLinkList(obj, 'Originals')[0];

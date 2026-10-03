@@ -57,7 +57,7 @@ export { STRUCTURAL_TYPES, STRUCTURAL_TYPES_EXTENDED, isFemStructural };
 export const SKETCH_T1 = 1e-6;
 
 /** Dispositions allowed in a conforming container (C4). */
-export const ALLOWED_DISPOSITIONS = new Set(['translated', 'python-baked', 'preserved-only']);
+export const ALLOWED_DISPOSITIONS = new Set(['translated', 'python-baked', 'preserved-only', 'skipped-empty']);
 
 /**
  * Optional knobs for `convertFcstdFile`.
@@ -110,6 +110,12 @@ function auditMapping(
       // python-opaque stays legitimate but is renamed for the ledger
       if (o.reason === 'python-opaque') {
         o.disposition = 'python-baked';
+      } else if (o.reason === 'sketch-empty-geoms') {
+        // K 组（2026-10-03, endstop-v1-2-makerbot）：GeometryList count="0" 的
+        // 真空草图对几何零贡献（Document.xml 实证），不构成翻译缺口——如实记为
+        // skipped-empty，不再把整个产品拉成 gap。消费者（Pad/Pocket 引用空草图）
+        // 会各自按 missing-dependency 记账，不在这里替它们保持红。
+        o.disposition = 'skipped-empty';
       } else if (STRUCTURAL_TYPES.has(o.type) || isFemStructural(o.type) || STRUCTURAL_TYPES_EXTENDED.has(o.type)) {
         o.disposition = 'preserved-only';
         o.reason = o.reason
@@ -456,11 +462,14 @@ export async function convertFcstdFile(input: string, opts?: ConvertOptions): Pr
   members['mapping.json'] = new TextEncoder().encode(JSON.stringify(mapping, null, 2));
 
   const counts = { translated: 0, pythonBaked: 0, preservedOnly: 0, baked: 0 };
+  const countsAny = counts as typeof counts & { skippedEmpty?: number };
+  countsAny.skippedEmpty = 0;
   for (const o of mapping.objects) {
     const d = o.disposition as string; // auditMapping may rename baked -> python-baked
     if (d === 'translated') counts.translated++;
     else if (d === 'python-baked') counts.pythonBaked++;
     else if (d === 'preserved-only') counts.preservedOnly++;
+    else if (d === 'skipped-empty') countsAny.skippedEmpty!++;
     else counts.baked++;
   }
   const sketches = { total: sketchVerdict.size, l0: 0, l1: 0, l2: 0 };
