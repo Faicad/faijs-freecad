@@ -61,6 +61,9 @@ function endOrdinal(at: At | undefined): 0 | 1 | undefined {
 }
 
 /**
+ * Decide whether canonical sketch geometry + constraints guarantee a closed
+ * profile loop (gate for baking a parametric `cad.sketch`).
+ *
  * @param geoms canonical sketch geometry (the would-be `cad.sketch` inputs)
  * @param constraints canonical constraints travelling with them
  * @returns true when a closed profile loop is topologically guaranteed —
