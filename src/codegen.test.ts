@@ -524,7 +524,7 @@ describe('M5 codegen', () => {
     const r = generateModel(
       doc,
       new Map([['Sketch', { level: 'L0' as const, loopCount: 1 }]]),
-      new Map([['Sketch', [square()]]]),
+      new Map([['Sketch', square()]]),
       't', undefined, undefined, undefined, undefined, undefined, inputs,
     );
     const sketch = r.objects.find((o) => o.name === 'Sketch');
