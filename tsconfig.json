@@ -26,9 +26,7 @@
       "@faicad/faijs": ["../core/src/index.ts"],
       "@faicad/faijs/*": ["../core/src/*"],
       "@faicad/faijs-sketch": ["../sketch/src/index.ts"],
-      "@faicad/faijs-sketch/*": ["../sketch/src/*"],
-      "@faicad/faijs-draw": ["../draw/src/index.ts"],
-      "@faicad/faijs-draw/*": ["../draw/src/*"]
+      "@faicad/faijs-sketch/*": ["../sketch/src/*"]
     }
   },
   "include": [

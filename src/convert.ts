@@ -279,9 +279,10 @@ export async function convertFcstdFile(input: string, opts?: ConvertOptions): Pr
     }
   }
 
-  // A4: rebuild Draft drawing objects (`Part::Part2DObjectPython`) from their
-  // frozen Shape .brp wireframes — the drawing process is re-emitted as a
-  // `cad.draw` pen chain (D1: drawings → cad.draw, not profile/baked).
+  // A1 (2026-09-29): rebuild Draft drawing objects (`Part::Part2DObjectPython`)
+  // from their frozen Shape .brp geometry — each wire is re-emitted as a
+  // `ProfileLoop` and placed by `cad.sketchOnPlane` (see codegen.ts / draft-draw.ts).
+  // The superseded `cad.draw` pen-chain emission was removed.
   const draftDrawings = new Map<string, DraftDrawing>();
   for (const obj of doc.value.objects) {
     if (!isDraft2DObject(obj)) continue;

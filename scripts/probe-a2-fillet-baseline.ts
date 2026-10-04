@@ -23,12 +23,11 @@ import { cliRun } from '@faicad/faijs/node';
 import { createApiNamespace } from '@faicad/faijs';
 import { mergeSketchNamespace, installSketchSolver } from '@faicad/faijs-sketch';
 import { createNodePlanegcsSolver } from '@faicad/faijs-sketch/node';
-import { mergeDrawNamespace } from '@faicad/faijs-draw';
 import { convertFcstdFile } from '../src/convert.js';
 import { openContainer } from '@faicad/faijs/io/fai-zip';
 
 installSketchSolver(createNodePlanegcsSolver);
-const CAD_NS = mergeDrawNamespace(mergeSketchNamespace(createApiNamespace()));
+const CAD_NS = mergeSketchNamespace(createApiNamespace());
 
 /** de Boor evaluation of a clamped/rational NURBS at parameter u (no weights here). */
 function deBoor(poles: number[], knots: number[], mults: number[], degree: number, u: number): [number, number] {

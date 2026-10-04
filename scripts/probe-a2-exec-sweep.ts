@@ -22,12 +22,11 @@ import { cliRun } from '@faicad/faijs/node';
 import { createApiNamespace } from '@faicad/faijs';
 import { mergeSketchNamespace, installSketchSolver } from '@faicad/faijs-sketch';
 import { createNodePlanegcsSolver } from '@faicad/faijs-sketch/node';
-import { mergeDrawNamespace } from '@faicad/faijs-draw';
 import { convertFcstdFile } from '../src/convert.js';
 import { openContainer } from '@faicad/faijs/io/fai-zip';
 
 installSketchSolver(createNodePlanegcsSolver);
-const CAD_NS = mergeDrawNamespace(mergeSketchNamespace(createApiNamespace()));
+const CAD_NS = mergeSketchNamespace(createApiNamespace());
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..', '..');

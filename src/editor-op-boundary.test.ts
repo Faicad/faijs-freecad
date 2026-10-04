@@ -8,9 +8,7 @@ import { SYMBOL_TABLE, symbolTableNames } from '@faicad/faijs/symbol-table';
 // only when a host registers them — register here so the boundary guard sees
 // the same namespace a real run host has.
 import { registerSketchSymbols, unregisterSketchSymbols } from '@faicad/faijs-sketch';
-// A4 (2026-09-28): Draft drawings emit `cad.draw` (drawing-process rebuild) —
-// register the draw library symbols for the same reason as the sketch ones.
-import { registerDrawSymbols, unregisterDrawSymbols } from '@faicad/faijs-draw';
+
 
 /**
  * Editor-owned op boundary guard (2026-09-21) — see
@@ -106,10 +104,8 @@ function loweringCallees(): string[] {
 
 describe('editor-owned op boundary', () => {
   registerSketchSymbols();
-  registerDrawSymbols();
   afterAll(() => {
     unregisterSketchSymbols();
-    unregisterDrawSymbols();
   });
 
   it('every editor-owned op still carries @deprecated in its source JSDoc', () => {

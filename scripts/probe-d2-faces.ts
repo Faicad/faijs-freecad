@@ -22,12 +22,11 @@ import { initOcctWasm } from '@faicad/faijs/occt-kernel/occtKernel';
 import { createApiNamespace } from '@faicad/faijs';
 import { mergeSketchNamespace, installSketchSolver } from '@faicad/faijs-sketch';
 import { createNodePlanegcsSolver } from '@faicad/faijs-sketch/node';
-import { mergeDrawNamespace } from '@faicad/faijs-draw';
 import { getBrepApi } from '@faicad/faijs/brep/handle-bridge';
 import { brepOf } from '@faicad/faijs/shape';
 
 installSketchSolver(createNodePlanegcsSolver);
-const CAD_NS = mergeDrawNamespace(mergeSketchNamespace(createApiNamespace())) as Record<string, unknown>;
+const CAD_NS = mergeSketchNamespace(createApiNamespace()) as Record<string, unknown>;
 
 const docPath = process.argv[2];
 const upto = process.argv[3]; // e.g. "s9"

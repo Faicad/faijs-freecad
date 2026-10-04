@@ -35,19 +35,15 @@ import { cliRun } from '@faicad/faijs/node';
 import { createApiNamespace } from '@faicad/faijs';
 import { mergeSketchNamespace, installSketchSolver } from '@faicad/faijs-sketch';
 import { createNodePlanegcsSolver } from '@faicad/faijs-sketch/node';
-import { mergeDrawNamespace } from '@faicad/faijs-draw';
 import { convertFcstdFile } from './convert.js';
 import { openContainer } from '@faicad/faijs/io/fai-zip';
 
 installSketchSolver(createNodePlanegcsSolver);
 
-// The host a real `.fai.zip` consumer must provide: platform + sketch + draw. Until
-// A1 (2026-09-29) the Draft emission called `cad.draw`, which is why
-// `@faicad/faijs-freecad` declares `@faicad/faijs-draw` as a runtime dependency; the
-// contours now travel as `ProfileLoop` data, so that dependency is worth revisiting
-// (kept registered here because it is still declared and the host must match the
-// declared surface).
-const CAD_NS = mergeDrawNamespace(mergeSketchNamespace(createApiNamespace()));
+// The host a real `.fai.zip` consumer must provide: platform + sketch. A1
+// (2026-09-29) removed the Draft `cad.draw` emission — the contours travel as
+// `ProfileLoop` data — so the draw library is no longer part of this host.
+const CAD_NS = mergeSketchNamespace(createApiNamespace());
 
 const here = dirname(fileURLToPath(import.meta.url));
 // src → packages/faijs-freecad → packages → repo root → D:/Faicad (sibling checkout).

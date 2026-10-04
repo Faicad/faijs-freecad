@@ -41,7 +41,7 @@
     "LICENSE"
   ],
   "dependencies": {
-    "@faicad/faijs-draw": "^0.29.0",
+
     "@faicad/faijs-sketch": "^0.29.0",
     "@xmldom/xmldom": "^0.9.8"
   },
