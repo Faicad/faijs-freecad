@@ -414,6 +414,92 @@ describe('M5 codegen', () => {
     expect(r.code).not.toContain('cad.sketch(');
   });
 
+  // GOTCHA (K 组 2026-10-04, Kitchen_cabinet vs Maxim Air): a convert-time
+  // zero-loop verdict does NOT license baking the sketch. Kitchen_cabinet's
+  // Sketch037 et al. precheck as loopCount 0 yet RUN fine — the run-time
+  // re-solve snaps their coincident endpoints and extracts loops. Maxim Air
+  // Sketch188 (a genuinely open 2-line V) throws E_SKETCHC_NO_CONTOUR with the
+  // SAME convert-time verdict. The two are indistinguishable from the emission
+  // site, so the parametric emission stays the default; a bake gate here is
+  // FORBIDDEN (it regressed 2 e2e fixtures when tried). A constraint-topology
+  // cycle check (coincident equivalence classes + degree-2 profile cycle) is
+  // the only sound discriminator — recorded as a follow-up, not implemented.
+  it('emits the parametric cad.sketch even for a zero-loop verdict (bake gate forbidden — Kitchen vs Maxim GOTCHA)', () => {
+    const doc: FcstdDocument = {
+      objects: [
+        simpleObj('Sketcher::SketchObject', 'Sketch', {}),
+        simpleObj('PartDesign::Pad', 'Pad', { Profile: { value: 'Sketch' }, Length: { value: '10' } }),
+      ],
+      typeIndex: new Map(),
+      meta: new Map(),
+    };
+    // 开口 V 形（Maxim Air Sketch188 的形态）：geoms 非空，转换期环判定为 0
+    const inputs = new Map([['Sketch', {
+      geoms: [
+        { kind: 'line' as const, x1: 0, y1: 0, x2: 10, y2: 20 },
+        { kind: 'line' as const, x1: 10, y1: 20, x2: 20, y2: 0 },
+      ],
+      constraints: [],
+    }]]);
+    const r = generateModel(
+      doc,
+      new Map([['Sketch', { level: 'L0' as const, loopCount: 0 }]]),
+      NO_CONTOURS,
+      't', undefined, undefined, undefined, undefined, undefined, inputs,
+    );
+    const sketch = r.objects.find((o) => o.name === 'Sketch');
+    expect(sketch).toMatchObject({ disposition: 'translated' });
+    expect(r.code).toContain('cad.sketch(');
+  });
+
+  // reason 三元扩展（P3-4 判据的 loopCount 口径补全）：verdict L0 + loopCount 0
+  // 而 contours 条目缺失时，bake fallback 仍如实命名为 sketch-solved-no-closed-loop
+  // （而不是误导性的 sketch-no-contours）。
+  it('labels a baked L0 zero-loop sketch sketch-solved-no-closed-loop even without a contours entry', () => {
+    const doc: FcstdDocument = {
+      objects: [
+        simpleObj('Sketcher::SketchObject', 'Sketch', {}),
+        simpleObj('PartDesign::Pad', 'Pad', { Profile: { value: 'Sketch' }, Length: { value: '10' } }),
+      ],
+      typeIndex: new Map(),
+      meta: new Map(),
+    };
+    const r = generateModel(
+      doc,
+      new Map([['Sketch', { level: 'L0' as const, loopCount: 0 }]]),
+      NO_CONTOURS,
+      't',
+    );
+    const sketch = r.objects.find((o) => o.name === 'Sketch');
+    expect(sketch).toMatchObject({ disposition: 'baked', reason: 'sketch-solved-no-closed-loop' });
+  });
+
+  // 门禁的反面：loopCount ≥ 1（或 verdict 缺 loopCount）时，非空 inputs 照常
+  // 参数化发射——门禁只拦「确定的零环」，不惩罚无法判定的情况。
+  it('still emits the parametric cad.sketch when the verdict has a loop (loopCount 1)', () => {
+    const doc: FcstdDocument = {
+      objects: [
+        simpleObj('Sketcher::SketchObject', 'Sketch', {}),
+        simpleObj('PartDesign::Pad', 'Pad', { Profile: { value: 'Sketch' }, Length: { value: '10' } }),
+      ],
+      typeIndex: new Map(),
+      meta: new Map(),
+    };
+    const inputs = new Map([['Sketch', {
+      geoms: [{ kind: 'circle' as const, cx: 0, y: undefined as never, cy: 0, r: 5 } as never],
+      constraints: [],
+    }]]);
+    const r = generateModel(
+      doc,
+      new Map([['Sketch', { level: 'L0' as const, loopCount: 1 }]]),
+      new Map([['Sketch', [square()]]]),
+      't', undefined, undefined, undefined, undefined, undefined, inputs,
+    );
+    const sketch = r.objects.find((o) => o.name === 'Sketch');
+    expect(sketch).toMatchObject({ disposition: 'translated' });
+    expect(r.code).toContain('cad.sketch(');
+  });
+
   it('groups multiple roots via cad.compound', () => {
     const doc: FcstdDocument = {
       objects: [simpleObj('Part::Box', 'A', {}), simpleObj('Part::Box', 'B', {})],

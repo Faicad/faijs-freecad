@@ -346,6 +346,15 @@ export function generateModel(
       // the same planegcs backend. The old solved-contour → `cad.profile`
       // emission becomes the A5 fallback only.
       const inputs = sketchInputs?.get(name);
+      // GOTCHA (K 组 2026-10-04, Kitchen_cabinet vs Maxim Air): convert-time
+      // `loopCount === 0` does NOT predict a run-time E_SKETCHC_NO_CONTOUR.
+      // A gate here (bake zero-loop sketches instead of emitting parametric
+      // cad.sketch) regressed 2 e2e fixtures: Kitchen_cabinet's Sketch037 et al.
+      // precheck as loopCount 0 yet the RUN-TIME re-solve snaps their coincident
+      // endpoints and extracts loops fine. Maxim Air Sketch188 (a genuinely open
+      // 2-line V) fails at run time with the same convert-time verdict. A single
+      // convert-time signal cannot separate the two — the parametric emission
+      // stays the default for every non-empty input.
       if (inputs && inputs.geoms.length > 0) {
         const v = emitVar(name);
         variables.set(name, v);
@@ -422,7 +431,7 @@ export function generateModel(
         const reason = inputs && inputs.geoms.length === 0
           ? 'sketch-empty-geoms'
           : verdict?.reason
-          ?? (verdict?.level === 'L0' && contours && contours.length === 0
+          ?? (verdict?.level === 'L0' && (verdict.loopCount === 0 || (contours && contours.length === 0))
             ? 'sketch-solved-no-closed-loop'
             : contours ? 'sketch-not-solved' : 'sketch-no-contours');
         results.push({
