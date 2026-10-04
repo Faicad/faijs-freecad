@@ -7,14 +7,28 @@ import { translateObject, isWhitelisted, placementPos, isJsExpr } from './featur
 import type { FcstdObject, FcstdProperty } from './document.js';
 import { parseFilletEdges, type FilletEdgeEntry } from './fillet-edges.js';
 
-function prop(name: string, child: { name: string; attrs: Record<string, string> } | null = null): [string, FcstdProperty] {
+function prop(
+  name: string,
+  child: { name: string; attrs: Record<string, string> } | null = null,
+  grandChildren: { name: string; attrs: Record<string, string> }[] = [],
+): [string, FcstdProperty] {
+  const inner = child
+    ? {
+        name: child.name,
+        type: '',
+        tagName: child.name,
+        children: grandChildren.map((g) => ({ name: g.name, type: '', tagName: g.name, children: [], valueXml: '', valueText: '', attributes: g.attrs })),
+        valueText: '',
+        attributes: child.attrs,
+      }
+    : null;
   return [
     name,
     {
       name,
       type: '',
       tagName: 'Property',
-      children: child ? [{ name: child.name, type: '', tagName: child.name, children: [], valueXml: '', valueText: '', attributes: child.attrs }] : [],
+      children: inner ? [inner] : [],
       valueText: '',
       attributes: {},
     },
