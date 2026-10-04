@@ -22,6 +22,7 @@ import {
 import type { FilletEdgeEntry } from './fillet-edges.js';
 import type { LeafParam } from './params.js';
 import type { Contour, SketchGeom, SketchConstraint } from '@faicad/faijs-sketch';
+import { hasConstraintClosedLoop } from './sketch-loop-topology.js';
 import { type Placement, isIdentityPlacement, invertApplyPlacement, planeBasis } from './placement.js';
 import { isNonModelingType } from './structural-types.js';
 import type { DraftDrawing } from './draft-draw.js';
@@ -163,7 +164,7 @@ export function generateModel(
    *  on top) — HBS_assembly Cut002 (C2, 2026-10-01). See `childShapeAssets`. */
   prePlacedAssets?: ReadonlySet<string>,
   /** A2: canonical geoms+constraints per parameterizable sketch (cad.sketch emission). */
-  sketchInputs?: ReadonlyMap<string, { geoms: SketchGeom[]; constraints: SketchConstraint[] }>,
+  sketchInputs?: ReadonlyMap<string, { geoms: SketchGeom[]; constraints: SketchConstraint[]; closureUnobservable?: boolean }>,
   /** A1: rebuilt Draft drawings per Part::Part2DObjectPython (cad.sketchOnPlane ProfileLoop emission). */
   draftDrawings?: ReadonlyMap<string, DraftDrawing>,
   /** C1/C2/C4: the document's leaf parameters, emitted as top-level `const p_*`
@@ -347,15 +348,27 @@ export function generateModel(
       // emission becomes the A5 fallback only.
       const inputs = sketchInputs?.get(name);
       // GOTCHA (K 组 2026-10-04, Kitchen_cabinet vs Maxim Air): convert-time
-      // `loopCount === 0` does NOT predict a run-time E_SKETCHC_NO_CONTOUR.
-      // A gate here (bake zero-loop sketches instead of emitting parametric
-      // cad.sketch) regressed 2 e2e fixtures: Kitchen_cabinet's Sketch037 et al.
-      // precheck as loopCount 0 yet the RUN-TIME re-solve snaps their coincident
-      // endpoints and extracts loops fine. Maxim Air Sketch188 (a genuinely open
-      // 2-line V) fails at run time with the same convert-time verdict. A single
-      // convert-time signal cannot separate the two — the parametric emission
-      // stays the default for every non-empty input.
-      if (inputs && inputs.geoms.length > 0) {
+      // `loopCount === 0` alone does NOT predict a run-time
+      // E_SKETCHC_NO_CONTOUR — Kitchen_cabinet's Sketch037 et al. precheck as
+      // zero-loop yet run fine (the run-time re-solve snaps their coincident
+      // endpoints before chaining). Gating on loopCount alone regressed 2 e2e
+      // fixtures and was reverted; the sound discriminator is the CONSTRAINT
+      // TOPOLOGY (`hasConstraintClosedLoop`): bake only when the profile is
+      // PROVABLY open (zero convert-time loops AND no coincident/numeric
+      // cycle the re-solve could materialize — Maxim Air Sketch188's open V),
+      // emit parametric otherwise.
+      const provablyOpen = !!inputs &&
+        verdict?.loopCount === 0 &&
+        // K GOTCHA: the projection drops constraint refs it cannot map (axis
+        // / external coincidents — Kitchen_cabinet Sketch037/229/036,
+        // FCBL_curtain Sketch) and external geometry altogether, so a sketch
+        // closing THROUGH a dropped constraint looks open to the topology
+        // check even though the run-time solve gets the full picture and
+        // closes fine — never bake what the discriminator cannot see
+        // (closureUnobservable covers every blind spot in one flag).
+        !inputs.closureUnobservable &&
+        !hasConstraintClosedLoop(inputs.geoms, inputs.constraints);
+      if (inputs && inputs.geoms.length > 0 && !provablyOpen) {
         const v = emitVar(name);
         variables.set(name, v);
         // A3 (D3 (b), 2026-09-28): the sketch's (attachment-resolved) Placement

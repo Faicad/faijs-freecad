@@ -165,7 +165,7 @@ export async function convertFcstdFile(input: string, opts?: ConvertOptions): Pr
   // A2 (2026-09-28 plan): canonical geoms+constraints per parameterizable sketch —
   // the convert-time solve is now only a FIDELITY PRECHECK; the emitted
   // `cad.sketch` re-solves at run time (D2 decision (b)).
-  const sketchInputs = new Map<string, { geoms: SketchGeom[]; constraints: SketchConstraint[] }>();
+  const sketchInputs = new Map<string, { geoms: SketchGeom[]; constraints: SketchConstraint[]; closureUnobservable?: boolean }>();
   // C2 (2026-09-28 plan): named dimensional constraints lifted to `const p_*`.
   // The candidate list feeds the shared parameter allocator; the index list says
   // which canonical constraint carries the parameter so its `value` can be
@@ -240,7 +240,21 @@ export async function convertFcstdFile(input: string, opts?: ConvertOptions): Pr
       if (!solveFailed) {
         const geoms = fromFreeCadGeoms(sk.geoms);
         const proj = fromFreeCadConstraints(sk.constraints, geoms);
-        sketchInputs.set(obj.name, { geoms, constraints: proj.constraints });
+        // K 组 (2026-10-04): the projection DROPS constraint refs it cannot
+        // map (axis refs like Sketch037's coincident to the X axis, external
+        // refs — `external-or-axis-ref` — and other unmapped kinds), so a
+        // sketch whose profile closes THROUGH a dropped constraint looks
+        // provably-open to the topology discriminator even though the
+        // run-time solve (which gets the full picture) closes it fine —
+        // Kitchen_cabinet_base Sketch037/229/036, FCBL_curtain Sketch. One
+        // flag covers every blind spot: closure is UNOBSERVABLE when any
+        // constraint was dropped OR external geometry is present; the
+        // emission gate never bakes what the discriminator cannot see.
+        sketchInputs.set(obj.name, {
+          geoms,
+          constraints: proj.constraints,
+          closureUnobservable: proj.unmapped.length > 0 || sk.externalGeoIds.length > 0,
+        });
         // C2: correlate every projected constraint with its FCStd source, in
         // input order minus the unmapped indices (`unmapped` is exactly the
         // projection's own rejection ledger, so the two can never disagree).

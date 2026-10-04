@@ -415,16 +415,12 @@ describe('M5 codegen', () => {
   });
 
   // GOTCHA (K 组 2026-10-04, Kitchen_cabinet vs Maxim Air): a convert-time
-  // zero-loop verdict does NOT license baking the sketch. Kitchen_cabinet's
-  // Sketch037 et al. precheck as loopCount 0 yet RUN fine — the run-time
-  // re-solve snaps their coincident endpoints and extracts loops. Maxim Air
-  // Sketch188 (a genuinely open 2-line V) throws E_SKETCHC_NO_CONTOUR with the
-  // SAME convert-time verdict. The two are indistinguishable from the emission
-  // site, so the parametric emission stays the default; a bake gate here is
-  // FORBIDDEN (it regressed 2 e2e fixtures when tried). A constraint-topology
-  // cycle check (coincident equivalence classes + degree-2 profile cycle) is
-  // the only sound discriminator — recorded as a follow-up, not implemented.
-  it('emits the parametric cad.sketch even for a zero-loop verdict (bake gate forbidden — Kitchen vs Maxim GOTCHA)', () => {
+  // zero-loop verdict ALONE cannot gate the emission (a bake gate on it alone
+  // regressed 2 e2e fixtures — Kitchen_cabinet Sketch037 et al. precheck
+  // zero-loop yet run fine). The sound gate bakes only a PROVABLY OPEN profile
+  // (zero convert-time loops AND no coincident/numeric cycle — the constraint
+  // topology check `hasConstraintClosedLoop`): Maxim Air Sketch188's open V.
+  it('bakes a PROVABLY OPEN sketch (zero-loop verdict + no constraint cycle) as sketch-solved-no-closed-loop', () => {
     const doc: FcstdDocument = {
       objects: [
         simpleObj('Sketcher::SketchObject', 'Sketch', {}),
@@ -433,13 +429,49 @@ describe('M5 codegen', () => {
       typeIndex: new Map(),
       meta: new Map(),
     };
-    // 开口 V 形（Maxim Air Sketch188 的形态）：geoms 非空，转换期环判定为 0
+    // 开口 V 形（Maxim Air Sketch188 的形态）：geoms 非空、无闭合约束 →
+    // 拓扑可证开口，运行期必抛 E_SKETCHC_NO_CONTOUR，必须 bake
     const inputs = new Map([['Sketch', {
       geoms: [
         { kind: 'line' as const, x1: 0, y1: 0, x2: 10, y2: 20 },
         { kind: 'line' as const, x1: 10, y1: 20, x2: 20, y2: 0 },
       ],
       constraints: [],
+    }]]);
+    const r = generateModel(
+      doc,
+      new Map([['Sketch', { level: 'L0' as const, loopCount: 0 }]]),
+      NO_CONTOURS,
+      't', undefined, undefined, undefined, undefined, undefined, inputs,
+    );
+    const sketch = r.objects.find((o) => o.name === 'Sketch');
+    expect(sketch).toMatchObject({ disposition: 'baked', reason: 'sketch-solved-no-closed-loop' });
+    expect(r.code).not.toContain('cad.sketch(');
+  });
+
+  // Kitchen 型反例：转换期零环但 coincident 约束链首尾闭合 → 照常参数化发射
+  // （运行期重解吸合端点后能提出环——bake 会误杀）。
+  it('emits the parametric cad.sketch for a zero-loop verdict whose constraint topology CLOSES (Kitchen type)', () => {
+    const doc: FcstdDocument = {
+      objects: [
+        simpleObj('Sketcher::SketchObject', 'Sketch', {}),
+        simpleObj('PartDesign::Pad', 'Pad', { Profile: { value: 'Sketch' }, Length: { value: '10' } }),
+      ],
+      typeIndex: new Map(),
+      meta: new Map(),
+    };
+    // 三角环，数值上端点断开、靠 coincident 吸合（Kitchen_cabinet Sketch037 形态）
+    const inputs = new Map([['Sketch', {
+      geoms: [
+        { kind: 'line' as const, x1: 0, y1: 0, x2: 40, y2: 0, tag: 'g0' },
+        { kind: 'line' as const, x1: 41, y1: 0, x2: 20, y2: 35, tag: 'g1' },
+        { kind: 'line' as const, x1: 19, y1: 34, x2: 0, y2: 0, tag: 'g2' },
+      ],
+      constraints: [
+        { kind: 'coincident' as const, a: { tag: 'g0', at: 'end' as const }, b: { tag: 'g1', at: 'start' as const } },
+        { kind: 'coincident' as const, a: { tag: 'g1', at: 'end' as const }, b: { tag: 'g2', at: 'start' as const } },
+        { kind: 'coincident' as const, a: { tag: 'g2', at: 'end' as const }, b: { tag: 'g0', at: 'start' as const } },
+      ],
     }]]);
     const r = generateModel(
       doc,
