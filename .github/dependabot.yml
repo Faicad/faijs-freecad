@@ -1,0 +1,30 @@
+# Dependabot cooldown: hold off on version updates for a few days after a
+# release, so a freshly-published (possibly malicious) version is not pulled in
+# on the same day it lands. GitHub applies a 3-day default; these values widen
+# the window. Security updates bypass cooldown entirely, so CVE fixes are never
+# delayed.
+
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+    groups:
+      npm:
+        patterns: ["*"]
+    open-pull-requests-limit: 3
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
+    open-pull-requests-limit: 5

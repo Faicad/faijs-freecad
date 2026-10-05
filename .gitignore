@@ -2,3 +2,5 @@ node_modules/
 dist/
 *.tgz
 out-publish-*.json
+out/
+ci.log

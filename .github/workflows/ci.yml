@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Keep this workflow STEP-ALIGNED with scripts/ci.ps1 (local Windows CI).
+# Both pipelines must run the same logical stages in the same order:
+#   lint -> typecheck -> build -> test (+stderr zero tolerance) -> pack.
+# If you add/remove/reorder a step here, mirror it in ci.ps1 (and vice versa).
+jobs:
+  build-and-test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+        node-version: [24]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # Build produces dist/ (gitignored); a fresh checkout has nothing until
+      # this runs, and the pack step depends on it.
+      - name: Build
+        run: npm run build
+
+      # Run the suite under the same hard external watchdog as ci.ps1, with
+      # stderr zero tolerance (a failing native call leaks "stderr |" lines).
+      - name: Test (hard watchdog + stderr zero tolerance)
+        run: |
+          set -o pipefail
+          node scripts/run-tests-with-watchdog.mjs --budget-ms "${FAIJS_TEST_BUDGET_MS:-300000}" -- npm run test 2>&1 | tee vitest-ci.log
+          rc=$?
+          # Zero stderr tolerance: any test writing "stderr |" lines fails CI.
+          if grep -E '^stderr \|' vitest-ci.log; then
+            echo "::error::Tests produced stderr output — all test stderr must be resolved."
+            rc=1
+          fi
+          rm -f vitest-ci.log
+          exit $rc
+
+      # Package-local packability.
+      - name: npm pack (local packability)
+        run: npm pack
