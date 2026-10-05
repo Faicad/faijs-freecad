@@ -51,7 +51,11 @@ describe('external-geo shape-file lookup', () => {
 });
 
 const here = dirname(fileURLToPath(import.meta.url));
-const BOSS_BRP = join(here, '..', '..', 'fixtures', 'data', 'brp', 'boss-solid.brp');
+// Vendored from the monorepo fixture package (`packages/fixtures/data/brp/boss-solid.brp`,
+// 2026-09-22) when this repo went standalone — the old `../../fixtures` path only
+// resolved inside the monorepo. The V1/V2 numbers below were measured against this
+// exact shape (probe-boss.mjs), so the file is pinned rather than regenerated.
+const BOSS_BRP = join(here, '..', 'test', 'fixtures', 'boss-solid.brp');
 
 /** Minimal FcstdProperty factory (attributes on the node itself). */
 function node(name: string, children: FcstdProperty[] = [], attributes: Record<string, string> = {}): FcstdProperty {
