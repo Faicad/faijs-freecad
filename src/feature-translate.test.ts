@@ -1502,7 +1502,7 @@ describe('M6.1 Fillet / Chamfer (edge anchors via cad.edgeRef)', () => {
     const depOk = (): string | undefined => 'Sketch';
     // Originals LinkList WITH one <Link value="Sketch"/> child (prop() cannot
     // nest grandchildren, so build the two-level structure inline)
-    const originalsProp = (name: string, file?: string): [string, FcstdProperty] => [
+    const originalsProp = (name: string): [string, FcstdProperty] => [
       name,
       {
         name, type: 'App::PropertyLinkList', tagName: 'Property',

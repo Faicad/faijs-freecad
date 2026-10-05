@@ -35,9 +35,6 @@ const CASES = [
   { name: 'plastic_bottle', rel: join('Generic objects', 'plastic_bottle.FCStd') },
 ];
 
-function gapTypes(gaps: { type: string }[]): string[] {
-  return gaps.map((g) => g.type).filter((t) => TARGET_TYPES.has(t));
-}
 function targetGaps(gaps: { name: string; type: string; reason: string }[]) {
   return gaps.filter((g) => TARGET_TYPES.has(g.type));
 }

@@ -366,7 +366,13 @@ function propStr(obj: FcstdObject, name: string): string | undefined {
 }
 
 /**
- * First `<Sub value="...">` of a LinkSub property, or undefined.
+ * Resolve a ReferenceAxis/Direction/Axis LinkSub into an axis + pivot.
+ *
+ * Tries, in order: ① `EdgeN` against the linked sketch's geometry list
+ * ({@link resolveSketchEdgeAxis} — needs docContext); ② the standard body-axis
+ * names via {@link parseReferenceAxis} (H_Axis/V_Axis/…; also used when the
+ * property carries no <Sub> child). Returns undefined when the reference names
+ * geometry that cannot be resolved — callers bake with an explicit reason.
  *
  * GOTCHA (2026-09-27, W1 revolve REVOLVE_FAILED): `ReferenceAxis` is an
  * `App::PropertyLinkSub` — `value="Sketch075"` names the linked OBJECT and the
@@ -375,19 +381,7 @@ function propStr(obj: FcstdObject, name: string): string | undefined {
  * `"Sketch075"`, which `parseReferenceAxis` matched against no standard axis
  * and silently fell back to the +Z default — revolving an XY-plane profile
  * about an in-plane Z axis degenerates and OCCT fails with REVOLVE_FAILED.
- */
-function propLinkSubFirst(obj: FcstdObject, name: string): string | undefined {
-  return propLinkSub(obj, name)?.subs[0];
-}
-
-/**
- * Resolve a ReferenceAxis/Direction/Axis LinkSub into an axis + pivot.
- *
- * Tries, in order: ① `EdgeN` against the linked sketch's geometry list
- * ({@link resolveSketchEdgeAxis} — needs docContext); ② the standard body-axis
- * names via {@link parseReferenceAxis} (H_Axis/V_Axis/…; also used when the
- * property carries no <Sub> child). Returns undefined when the reference names
- * geometry that cannot be resolved — callers bake with an explicit reason.
+ * Hence `subs[0]` first, `propStr` only as the last resort.
  */
 function resolveAxisRef(obj: FcstdObject, name: string): { axis: [number, number, number]; at: [number, number, number] } | undefined {
   const ls = propLinkSub(obj, name);

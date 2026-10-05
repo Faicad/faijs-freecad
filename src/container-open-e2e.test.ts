@@ -43,7 +43,7 @@ describe.skipIf(!sampleAvailable)('unified .fai.zip openContainer acceptance (fo
     expect(summary.zip).toBeDefined();
     if (!summary.zip) return;
 
-    const { manifest, activeModel, loader, files, assets } = openContainer(summary.zip);
+    const { manifest, activeModel, loader, assets } = openContainer(summary.zip);
 
     // Phase 3.9 (2026-09-30): the container layer inherits io/zip's default read
     // caps instead of defining its own. A real converted product must fit them —
@@ -79,7 +79,6 @@ describe.skipIf(!sampleAvailable)('unified .fai.zip openContainer acceptance (fo
     // BREP assets referenced by the scripts must be present in assets/
     expect(Object.keys(assets).length).toBeGreaterThan(0);
     for (const m of manifest.models) {
-      const entryKey = m.entry.slice('model/'.length);
       const scratch = mkdtempSync(join(tmpdir(), 'fai-zip-e2e-'));
       const assetsDir = join(scratch, 'assets');
       for (const [name, bytes] of Object.entries(assets)) {
@@ -111,7 +110,7 @@ describe.skipIf(!sampleAvailable)('unified .fai.zip openContainer acceptance (fo
     expect(summary.ok).toBe(true);
     expect(summary.zip).toBeDefined();
     if (!summary.zip) return;
-    const { manifest, loader, assets } = openContainer(summary.zip);
+    const { loader, assets } = openContainer(summary.zip);
     const scratch = mkdtempSync(join(tmpdir(), 'fai-zip-missing-asset-'));
     const assetsDir = join(scratch, 'assets');
     for (const [name, bytes] of Object.entries(assets)) {
@@ -123,8 +122,7 @@ describe.skipIf(!sampleAvailable)('unified .fai.zip openContainer acceptance (fo
       mkdirSync(join(p, '..'), { recursive: true });
       writeFileSync(p, await loader.readSource(moduleKey));
     }
-    // entry script references an asset key that does not exist in the container
-    const script = join(scratch, manifest.models[0]!.entry);
+// a model script referencing an asset key that does not exist in the container
     const broken = join(scratch, 'broken.fai.js');
     writeFileSync(broken, `let ghost = cad.import_brep({ asset: "no-such-asset" });\n`);
     const outStep = join(scratch, 'out.step');

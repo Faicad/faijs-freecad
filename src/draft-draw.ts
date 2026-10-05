@@ -693,7 +693,7 @@ function readEdge(kernel: DraftKernel, edge: number): DraftEdge | undefined {
   }
 
   if (kind === 'circle') {
-    let closed = false;
+    let closed: boolean;
     try {
       closed = kernel.curveIsClosed(edge);
     } catch {
@@ -730,7 +730,7 @@ function readEdge(kernel: DraftKernel, edge: number): DraftEdge | undefined {
   // B-spline share one branch deliberately: a Bézier IS a clamped B-spline, and
   // the kernel reports both as the same NURBS record.
   if (kind === 'bezier' || kind === 'bspline') {
-    let nr: ReturnType<DraftKernel['getNurbsCurveData']> = null;
+    let nr: ReturnType<DraftKernel['getNurbsCurveData']>;
     try {
       nr = kernel.getNurbsCurveData(edge);
     } catch {

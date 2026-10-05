@@ -1,8 +1,9 @@
 import { describe, it, expect, afterAll } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
-import { SYMBOL_TABLE, symbolTableNames } from '@faicad/faijs/symbol-table';
+import { symbolTableNames } from '@faicad/faijs/symbol-table';
 // A2 (2026-09-28): the lowering now emits `cad.sketch` (parametric sketch
 // translation). Its symbols live in the sketch library and join SYMBOL_TABLE
 // only when a host registers them — register here so the boundary guard sees
@@ -46,10 +47,10 @@ import { registerSketchSymbols, unregisterSketchSymbols } from '@faicad/faijs-sk
  * reachable from here.
  */
 const EDITOR_OWNED: Record<string, string> = {
-  translate: 'api/transform.ts',
-  rotate_euler: 'api/transform.ts',
-  scale: 'api/transform.ts',
-  scale3d: 'api/transform.ts',
+  translate: 'api/transform.d.ts',
+  rotate_euler: 'api/transform.d.ts',
+  scale: 'api/transform.d.ts',
+  scale3d: 'api/transform.d.ts',
 };
 
 /**
@@ -66,12 +67,15 @@ const EDITOR_OWNED: Record<string, string> = {
 const DECLARED_BORROW: Record<string, number> = {};
 
 const here = dirname(fileURLToPath(import.meta.url));
-// This test moved to `packages/faijs-freecad/src` with the fcstd package extraction;
-// the editor-owned op sources it pins still live in the core engine package.
-const coreSrcRoot = join(here, '..', '..', 'core', 'src');
+// Standalone layout (no `../core` sibling): the editor-owned op declarations ship
+// inside the installed @faicad/faijs package. Anchor on an export we already import
+// and read the `.d.ts` — tsc keeps JSDoc in declaration output, so `@name` and
+// `@deprecated` survive. Reading the published surface is also the stronger guard:
+// it pins what consumers actually get, not what a monorepo working copy holds.
+const coreDistRoot = dirname(createRequire(import.meta.url).resolve('@faicad/faijs/symbol-table'));
 
 function read(relative: string): string {
-  return readFileSync(join(coreSrcRoot, relative), 'utf-8');
+  return readFileSync(join(coreDistRoot, relative), 'utf-8');
 }
 
 /**
@@ -108,7 +112,7 @@ describe('editor-owned op boundary', () => {
     unregisterSketchSymbols();
   });
 
-  it('every editor-owned op still carries @deprecated in its source JSDoc', () => {
+  it('every editor-owned op still carries @deprecated in its published JSDoc', () => {
     for (const [op, file] of Object.entries(EDITOR_OWNED)) {
       const text = read(file);
       const nameAt = text.indexOf(`@name ${op}\n`);
